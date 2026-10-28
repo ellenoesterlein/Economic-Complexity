@@ -18,6 +18,9 @@ lcom = [
     "xarray>=2025.3.1",
 ]
 
+[project.scripts]
+lcom = "lcom.cli:main"
+
 [tool.uv.sources]
 # BOA 1.10.0. Its cost and WACC code is the same as in 1.8.0, which produced the older LCOE files.
 baseload-optimisation-atlas = { git = "https://github.com/systemiqofficial/baseload-optimisation-atlas", rev = "aca4e056889567f1b7dbeefa85ccd009d147d3bb" }

@@ -19,6 +19,7 @@ of the paper's figshare data. The DAC relative productivity is set to 1.
 
 from dataclasses import dataclass
 
+from lcom.chain import DacParams, ElectrolysisParams, HeatPumpParams, MethanolParams
 from lcom.constants import (
     HOURS_IN_YEAR,
     KWH_PER_KG_H2_LHV,
@@ -267,3 +268,29 @@ def chain_inputs() -> dict[tuple[str, str], ChainInput]:
     ]
 
     return {(i.stage, i.parameter): i for i in inputs}
+
+
+@dataclass(frozen=True)
+class RouteBParams:
+    electrolysis: ElectrolysisParams
+    heat_pump: HeatPumpParams
+    dac: DacParams
+    methanol: MethanolParams
+
+
+def route_b_params() -> RouteBParams:
+    """The chain parameters of Route B, built from ``chain_inputs()``."""
+    inputs = chain_inputs()
+
+    def values(stage: str) -> dict[str, float]:
+        return {parameter: i.value for (s, parameter), i in inputs.items() if s == stage}
+
+    def lifetime(stage: str) -> int:
+        return int(inputs[stage, "lifetime"].value)
+
+    return RouteBParams(
+        electrolysis=ElectrolysisParams(**(values("electrolysis") | {"lifetime": lifetime("electrolysis")})),
+        heat_pump=HeatPumpParams(**(values("heat_pump") | {"lifetime": lifetime("heat_pump")})),
+        dac=DacParams(**(values("dac") | {"lifetime": lifetime("dac")})),
+        methanol=MethanolParams(**(values("methanol") | {"lifetime": lifetime("methanol")})),
+    )

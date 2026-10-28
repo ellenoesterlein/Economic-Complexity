@@ -52,6 +52,17 @@ def test_changed_workbook_value_marks_the_flag_stale(tmp_path, caplog):
     assert "DATA FLAG STALE" in caplog.text
 
 
+def test_subregion_rows_do_not_hide_the_region_row(tmp_path):
+    sheet = _capex_sheet(("irena region", "tech"))
+    sheet.insert(1, "subregion code", None)
+    province = pd.DataFrame([["China", "CHN:CN-GS", "Solar PV", 401.2]], columns=sheet.columns)
+    path = _write(tmp_path / "costs.xlsx", pd.concat([sheet, province], ignore_index=True))
+
+    results = check_cost_workbook_flags(path)
+
+    assert all(r.unchanged for r in results)
+
+
 def test_every_standing_and_chain_flag_is_logged(tmp_path, caplog):
     path = _write(tmp_path / "costs.xlsx", _capex_sheet(("irena region", "tech")))
 

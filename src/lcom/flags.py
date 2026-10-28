@@ -237,6 +237,9 @@ def check_cost_workbook_flags(path: Path, year: int = 2024) -> list[FlagResult]:
     """
     capex = _normalise_columns(pd.read_excel(path, sheet_name="RES CAPEX projections"))
     capex["irena region"] = capex["irena region"].astype(str).str.strip()
+    # Workbooks from 2026 add subregion rows (e.g. CHN:CN-GS) under a region; the flags review the region row.
+    if "subregion code" in capex.columns:
+        capex = capex[capex["subregion code"].isna()]
     if year not in capex.columns:
         raise ValueError(f"RES CAPEX projections in {path.name} has no {year} column.")
     results = []

@@ -27,7 +27,8 @@ def _cost_workbook(root) -> str:
     path = root / "costs" / COST_SET / "boa_cost_data.xlsx"
     path.parent.mkdir(parents=True)
     sheet = pd.DataFrame(
-        [[f.region, f.tech, f.workbook_value] for f in COST_WORKBOOK_FLAGS], columns=["irena region", "tech", 2024]
+        [[f.region, f.subregion, f.tech, f.workbook_value] for f in COST_WORKBOOK_FLAGS],
+        columns=["irena region", "subregion code", "tech", 2024],
     )
     with pd.ExcelWriter(path) as writer:
         sheet.to_excel(writer, sheet_name="RES CAPEX projections", index=False)
@@ -131,7 +132,14 @@ def test_run_writes_result_register_and_provenance(root, lcoe_path, tmp_path):
         assert out.attrs["lcoe_layout"] == "schema 1"
         assert out.attrs["load_factor"] == COVERAGE
         assert out.attrs["cost_key_legend"] == LEGEND
-        for key in ("capex.china.solar", "wacc.country", "dac-weather-fixed", "heat-integration-not-modelled"):
+        for key in (
+            "capex.china.solar",
+            "capex.china.provinces",
+            "wacc.country",
+            "dac-weather-fixed",
+            "heat-integration-not-modelled",
+            "lcoe.capacity-ceiling-not-applied",
+        ):
             assert key in out.attrs["data_flags"]
     provenance = json.loads(result.provenance.read_text(encoding="utf-8"))
     assert provenance["usd_per_eur"]["value"] == pytest.approx(1.08238046875)
@@ -178,6 +186,7 @@ def test_legacy_layout_is_accepted_and_recorded(root, tmp_path):
     with xr.open_dataset(result.netcdf) as out:
         assert out.attrs["lcoe_layout"] == "legacy BOA 1.8.0"
         assert out.attrs["capacity_ceiling_applied"] == "not recorded"
+        assert "lcoe.capacity-ceiling-not-applied" in out.attrs["data_flags"]
         assert np.isfinite(_at(out, "lcom_usd_per_mwh", 0, 1))
 
 
@@ -190,6 +199,17 @@ def test_overrides_are_used_recorded_and_named(root, lcoe_path, tmp_path):
         assert "override" in out.attrs["wacc_basis"]
         assert _at(out, "wacc", 0, 2) == pytest.approx(0.08)
         assert _at(out, "lcom_usd_per_mwh", 0, 2) == pytest.approx(_expected_lcom(90.0, 0.08, 0.95), rel=1e-6)
+
+
+def test_lcoe_with_the_capacity_ceiling_carries_no_ceiling_flag(root, tmp_path):
+    path = _lcoe_file(root, _sha(root), {**SCHEMA_1, "capacity_ceiling_applied": 1})
+
+    result = run(path, tmp_path / "out", data_root=root)
+
+    with xr.open_dataset(result.netcdf) as out:
+        assert "lcoe.capacity-ceiling-not-applied" not in out.attrs["data_flags"]
+    provenance = json.loads(result.provenance.read_text(encoding="utf-8"))
+    assert "lcoe.capacity-ceiling-not-applied" not in [f["key"] for f in provenance["data_flags"]]
 
 
 @pytest.mark.parametrize(

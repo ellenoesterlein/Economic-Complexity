@@ -30,6 +30,7 @@ STATUS_STAND_IN = "country-stand-in-for-region"
 STATUS_NOT_IDENTIFIED = "source-not-identified"
 STATUS_EXCLUDED = "pixels-excluded"
 STATUS_SIMPLIFIED = "simplification"
+STATUS_UNCONSTRAINED = "constraint-not-applied"
 
 IRENA_2024 = "IRENA, Renewable Power Generation Costs in 2024 (2025), Table 2.1 / Table 3.1"
 _BATTERY_NOTE = (
@@ -49,6 +50,7 @@ class DataFlag:
     workbook_value: float | None = None  # 2024 value when the flag was reviewed
     reference_value: float | None = None  # the value in the cited source, if it has one
     reference: str = ""
+    subregion: str | None = None  # "subregion code" of the workbook row; None: the region row
 
 
 COST_WORKBOOK_FLAGS: tuple[DataFlag, ...] = (
@@ -58,9 +60,21 @@ COST_WORKBOOK_FLAGS: tuple[DataFlag, ...] = (
         "China solar PV CAPEX differs from IRENA (591 USD/kW); source of the workbook value not identified.",
         "China",
         "Solar PV",
-        472.0,
+        530.0,
         591.0,
         IRENA_2024,
+    ),
+    DataFlag(
+        "capex.china.provinces",
+        STATUS_NOT_IDENTIFIED,
+        "Five Chinese provinces have their own solar PV and onshore wind CAPEX, a fixed share of the China "
+        "value: 85 % in Gansu (CN-GS) and Qinghai (CN-QH), 80 % in Shandong (CN-SD), 75 % in Inner Mongolia "
+        "(CN-NM) and Xinjiang (CN-XJ; 85 % in 2100 only). Source of the shares not identified.",
+        "China",
+        "Solar PV",
+        397.5,
+        None,
+        subregion="CHN:CN-XJ",
     ),
     DataFlag(
         "capex.china.wind",
@@ -214,7 +228,22 @@ CHAIN_FLAGS: tuple[DataFlag, ...] = (
     ),
 )
 
-ALL_FLAGS = COST_WORKBOOK_FLAGS + STANDING_FLAGS + CHAIN_FLAGS
+# Flags set by the attributes of the LCOE file; see ``lcoe_file_flags``.
+LCOE_CEILING_NOT_APPLIED = DataFlag(
+    "lcoe.capacity-ceiling-not-applied",
+    STATUS_UNCONSTRAINED,
+    "BOA did not apply its capacity ceiling to this LCOE file (capacity_ceiling_applied is 0, or not recorded "
+    "in a BOA 1.8.0 file, which has no ceiling). Each LCOE is the unconstrained optimum. BOA states that the "
+    "ceiling binds nearly everywhere once it is applied, so the LCOE and every cost of this chain are optimistic.",
+)
+LCOE_FILE_FLAGS: tuple[DataFlag, ...] = (LCOE_CEILING_NOT_APPLIED,)
+
+ALL_FLAGS = COST_WORKBOOK_FLAGS + STANDING_FLAGS + CHAIN_FLAGS + LCOE_FILE_FLAGS
+
+
+def lcoe_file_flags(attrs: dict) -> tuple[DataFlag, ...]:
+    """The flags that the attributes of an LCOE file set."""
+    return () if attrs.get("capacity_ceiling_applied") else (LCOE_CEILING_NOT_APPLIED,)
 
 
 @dataclass(frozen=True)
@@ -237,14 +266,18 @@ def check_cost_workbook_flags(path: Path, year: int = 2024) -> list[FlagResult]:
     """
     capex = _normalise_columns(pd.read_excel(path, sheet_name="RES CAPEX projections"))
     capex["irena region"] = capex["irena region"].astype(str).str.strip()
-    # Workbooks from 2026 add subregion rows (e.g. CHN:CN-GS) under a region; the flags review the region row.
-    if "subregion code" in capex.columns:
-        capex = capex[capex["subregion code"].isna()]
     if year not in capex.columns:
         raise ValueError(f"RES CAPEX projections in {path.name} has no {year} column.")
+    # Workbooks from 2026 add subregion rows (e.g. CHN:CN-GS) under a region; older ones have no column or
+    # an empty one. A subregion flag does not apply to a workbook without subregion rows.
+    subregion = capex.get("subregion code", pd.Series(None, index=capex.index, dtype=object))
+    has_subregions = bool(subregion.notna().any())
     results = []
     for flag in COST_WORKBOOK_FLAGS:
-        rows = capex[(capex["irena region"] == flag.region) & (capex["tech"] == flag.tech)]
+        if flag.subregion and not has_subregions:
+            continue
+        in_row = subregion == flag.subregion if flag.subregion else subregion.isna()
+        rows = capex[(capex["irena region"] == flag.region) & (capex["tech"] == flag.tech) & in_row]
         found = float(rows[year].iloc[0]) if len(rows) == 1 else None
         unchanged = (
             found is not None
@@ -255,7 +288,7 @@ def check_cost_workbook_flags(path: Path, year: int = 2024) -> list[FlagResult]:
     return results
 
 
-def log_flags(results: list[FlagResult]) -> None:
+def log_flags(results: list[FlagResult], file_flags: tuple[DataFlag, ...] = ()) -> None:
     """One warning per flag, so a run log states every caveat that applies."""
     for result in results:
         flag = result.flag
@@ -267,5 +300,5 @@ def log_flags(results: list[FlagResult]) -> None:
                 flag.workbook_value,
             )
         logger.warning("[DATA FLAG] %s (%s): %s", flag.key, flag.status, flag.description)
-    for flag in (*STANDING_FLAGS, *CHAIN_FLAGS):
+    for flag in (*STANDING_FLAGS, *CHAIN_FLAGS, *file_flags):
         logger.warning("[DATA FLAG] %s (%s): %s", flag.key, flag.status, flag.description)

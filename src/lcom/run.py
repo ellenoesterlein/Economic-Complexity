@@ -35,7 +35,7 @@ from boa.model.single_point_run import costs_for_key
 
 from lcom import register
 from lcom.chain import co2_cost, lcoh, lcom
-from lcom.flags import CHAIN_FLAGS, STANDING_FLAGS, check_cost_workbook_flags, log_flags
+from lcom.flags import CHAIN_FLAGS, STANDING_FLAGS, check_cost_workbook_flags, lcoe_file_flags, log_flags
 from lcom.paper_inputs import (
     ECB_ACCESSED,
     ECB_SERIES,
@@ -247,7 +247,8 @@ def run(
         )
 
     flag_results = check_cost_workbook_flags(workbook)
-    log_flags(flag_results)
+    file_flags = lcoe_file_flags(attrs)
+    log_flags(flag_results, file_flags)
 
     legend = str(attrs["cost_key_legend"]).split(",")
     has_key = np.array([bool(key) for key in legend])[cost_key_id]
@@ -274,7 +275,7 @@ def run(
 
     created_at = datetime.now(UTC).isoformat(timespec="seconds")
     load_factor_basis = "coverage_fraction of the LCOE run" if load_factor is None else "command-line override"
-    data_flags = ",".join(f.key for f in (*(r.flag for r in flag_results), *STANDING_FLAGS, *CHAIN_FLAGS))
+    data_flags = ",".join(f.key for f in (*(r.flag for r in flag_results), *STANDING_FLAGS, *CHAIN_FLAGS, *file_flags))
     carried = {k: attrs[k] for k in CARRIED_ATTRS if k in attrs}
     out_attrs = {
         **carried,
@@ -376,7 +377,7 @@ def run(
             "usd_per_eur": {"value": USD_PER_EUR, "series": ECB_SERIES, "accessed": ECB_ACCESSED},
             "load_factor": {"value": lf, "basis": load_factor_basis},
             "wacc": {"basis": wacc_basis, **wacc_summary},
-            "data_flags": register.flag_records(flag_results),
+            "data_flags": register.flag_records(flag_results, file_flags),
         },
         paths.provenance,
     )

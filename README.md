@@ -114,7 +114,7 @@ the paper's scaling to future energy demand.
 - Water supply, storage, compression, transport, taxes, stack replacement, degradation, minimum load, regional
   differences in process CAPEX.
 - The flexible, off-grid operation of the paper: every plant runs at constant load on firm BOA power.
-- The BOA capacity ceiling: results are unconstrained optima.
+- The BOA capacity ceiling, when the LCOE file does not apply it: results are then unconstrained optima.
 - LCOE years other than 2050.
 
 ### Data sources

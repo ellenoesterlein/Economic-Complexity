@@ -5,16 +5,25 @@ import pandas as pd
 import pytest
 
 from lcom import paper_inputs
-from lcom.flags import ALL_FLAGS, CHAIN_FLAGS, COST_WORKBOOK_FLAGS, STANDING_FLAGS, check_cost_workbook_flags, log_flags
+from lcom.flags import (
+    ALL_FLAGS,
+    CHAIN_FLAGS,
+    COST_WORKBOOK_FLAGS,
+    LCOE_CEILING_NOT_APPLIED,
+    STANDING_FLAGS,
+    check_cost_workbook_flags,
+    lcoe_file_flags,
+    log_flags,
+)
 
 
-def _capex_sheet(columns: tuple[str, str], overrides: dict[tuple[str, str], float] | None = None) -> pd.DataFrame:
+def _capex_sheet(columns: tuple[str, str], overrides: dict[str, float] | None = None) -> pd.DataFrame:
+    """One row per flag; ``overrides`` maps a flag key to another workbook value."""
     overrides = overrides or {}
     rows = []
     for flag in COST_WORKBOOK_FLAGS:
-        value = overrides.get((flag.region, flag.tech), flag.workbook_value)
-        rows.append([flag.region, flag.tech, value])
-    return pd.DataFrame(rows, columns=[columns[0], columns[1], 2024])
+        rows.append([flag.region, flag.subregion, flag.tech, overrides.get(flag.key, flag.workbook_value)])
+    return pd.DataFrame(rows, columns=[columns[0], "subregion code", columns[1], 2024])
 
 
 def _write(path: Path, sheet: pd.DataFrame) -> Path:
@@ -41,7 +50,7 @@ def test_unchanged_workbook_matches_every_reviewed_flag(tmp_path, columns):
 
 
 def test_changed_workbook_value_marks_the_flag_stale(tmp_path, caplog):
-    path = _write(tmp_path / "costs.xlsx", _capex_sheet(("irena region", "tech"), {("China", "Solar PV"): 530.0}))
+    path = _write(tmp_path / "costs.xlsx", _capex_sheet(("irena region", "tech"), {"capex.china.solar": 472.0}))
 
     results = check_cost_workbook_flags(path)
     with caplog.at_level(logging.WARNING):
@@ -54,13 +63,40 @@ def test_changed_workbook_value_marks_the_flag_stale(tmp_path, caplog):
 
 def test_subregion_rows_do_not_hide_the_region_row(tmp_path):
     sheet = _capex_sheet(("irena region", "tech"))
-    sheet.insert(1, "subregion code", None)
-    province = pd.DataFrame([["China", "CHN:CN-GS", "Solar PV", 401.2]], columns=sheet.columns)
-    path = _write(tmp_path / "costs.xlsx", pd.concat([sheet, province], ignore_index=True))
+    other_province = pd.DataFrame([["China", "CHN:CN-GS", "Solar PV", 450.5]], columns=sheet.columns)
+    path = _write(tmp_path / "costs.xlsx", pd.concat([sheet, other_province], ignore_index=True))
 
     results = check_cost_workbook_flags(path)
 
+    assert len(results) == len(COST_WORKBOOK_FLAGS)
     assert all(r.unchanged for r in results)
+
+
+@pytest.mark.parametrize("drop_column", [True, False])
+def test_subregion_flag_is_left_out_for_a_workbook_without_subregions(tmp_path, drop_column):
+    sheet = _capex_sheet(("irena region", "tech"))
+    sheet = sheet[sheet["subregion code"].isna()]
+    if drop_column:
+        sheet = sheet.drop(columns="subregion code")
+    path = _write(tmp_path / "costs.xlsx", sheet)
+
+    results = check_cost_workbook_flags(path)
+
+    assert "capex.china.provinces" not in [r.flag.key for r in results]
+    assert all(r.unchanged for r in results)
+
+
+@pytest.mark.parametrize(
+    ("attrs", "flagged"),
+    [({"capacity_ceiling_applied": 0}, True), ({}, True), ({"capacity_ceiling_applied": 1}, False)],
+)
+def test_capacity_ceiling_flag_follows_the_lcoe_file(attrs, flagged, caplog):
+    flags = lcoe_file_flags(attrs)
+    with caplog.at_level(logging.WARNING):
+        log_flags([], flags)
+
+    assert (LCOE_CEILING_NOT_APPLIED in flags) is flagged
+    assert (LCOE_CEILING_NOT_APPLIED.key in caplog.text) is flagged
 
 
 def test_every_standing_and_chain_flag_is_logged(tmp_path, caplog):

@@ -15,7 +15,7 @@ from typing import Any
 
 import pandas as pd
 
-from lcom.flags import CHAIN_FLAGS, STANDING_FLAGS, FlagResult
+from lcom.flags import CHAIN_FLAGS, STANDING_FLAGS, DataFlag, FlagResult
 from lcom.paper_inputs import ChainInput
 
 REGISTER_COLUMNS = ["stage", "parameter", "year", "value", "unit", "source", "status", "basis", "data_flags"]
@@ -43,13 +43,13 @@ def write_register(rows: list[dict[str, Any]], path: Path) -> None:
     pd.DataFrame(rows, columns=REGISTER_COLUMNS).to_csv(path, index=False, encoding="utf-8")
 
 
-def flag_records(results: list[FlagResult]) -> list[dict[str, Any]]:
+def flag_records(results: list[FlagResult], file_flags: tuple[DataFlag, ...] = ()) -> list[dict[str, Any]]:
     records = []
     for result in results:
         record = {k: v for k, v in asdict(result.flag).items() if v is not None and v != ""}
         record.update(found_in_workbook=result.found, review_still_holds=result.unchanged)
         records.append(record)
-    for flag in (*STANDING_FLAGS, *CHAIN_FLAGS):
+    for flag in (*STANDING_FLAGS, *CHAIN_FLAGS, *file_flags):
         records.append({k: v for k, v in asdict(flag).items() if v is not None and v != ""})
     return records
 

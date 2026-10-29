@@ -16,6 +16,17 @@ uv sync                 # economic complexity only
 uv sync --extra lcom    # also the LCOM chain (installs BOA from GitHub)
 ```
 
+## Data
+
+All input data goes in `data/`. Git ignores it, except the BACI notes and lookup tables.
+
+```
+data/
+  baci/                BACI trade files (download, see data/baci/README.md); lookup tables (tracked)
+  boa/<run>/           one BOA run: the LCOE file and its cost workbook
+outputs/               results of both parts (git-ignored)
+```
+
 ## Economic complexity (ECI, PCI)
 
 ```
@@ -54,7 +65,7 @@ All process values are the paper's 2050 values, so the chain prices the LCOE yea
 
 ### Run
 
-Put the two files of one BOA run in `data/boa/<run>/` (git-ignored):
+Put the two files of one BOA run in `data/boa/<run>/`:
 
 | File | From the BOA data root |
 |---|---|

@@ -1,8 +1,9 @@
-# BACI trade files (several GB); the lookup tables next to them are tracked
-data/baci/BACI_*.csv
-
-# BOA LCOE files and cost workbooks for the LCOM chain
-data/boa/
+# Input data is local: everything in data/ except the BACI notes and lookup tables
+data/**
+!data/**/
+!data/baci/README.md
+!data/baci/country_codes_V202601.csv
+!data/baci/product_codes_HS22_V202601.csv
 
 # ECI and LCOM outputs
 outputs/

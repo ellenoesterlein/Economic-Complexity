@@ -4,7 +4,8 @@ CEPII BACI, version 202601 (release 2026-01-22): trade flows per year, exporter,
 Harmonized System 6-digit nomenclature (HS22). Values in thousand USD, quantities in metric tons.
 
 Download: <http://www.cepii.fr/CEPII/en/bdd_modele/bdd_modele_item.asp?id=37>. Put the yearly files
-`BACI_HS22_Y<year>_V202601.csv` in this folder. Git ignores them (several GB).
+`BACI_HS22_Y<year>_V202601.csv` in this folder. Git ignores them (several GB); it tracks only this file and
+the two lookup tables.
 
 | Variable | Content |
 |---|---|

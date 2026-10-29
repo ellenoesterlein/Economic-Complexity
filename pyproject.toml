@@ -14,6 +14,7 @@ dependencies = [
 [project.optional-dependencies]
 lcom = [
     "baseload-optimisation-atlas",
+    "matplotlib>=3.8",
     "netcdf4>=1.6.0",
     "xarray>=2025.3.1",
 ]

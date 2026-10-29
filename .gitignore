@@ -1,0 +1,14 @@
+# BACI input and ECI output of workflow/scripts/PCI, ECI, RCA.py (BACI files are several GB)
+workflow/scripts/data/
+workflow/scripts/output/
+
+# BOA LCOE files and cost workbooks for the LCOM chain
+data/boa/
+
+# LCOM run outputs
+outputs/
+
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

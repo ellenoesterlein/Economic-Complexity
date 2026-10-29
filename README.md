@@ -89,6 +89,32 @@ LCOE), `…_assumptions_register.csv` (one row per input with value, unit and so
 It accepts LCOE files of BOA 1.8.0 and of BOA 1.9 or later (`schema_version` 1), and refuses a workbook that
 differs from the one that priced the LCOE. BOA's cost cache goes to `cache_costs/` next to the workbook.
 
+### Plots
+
+```
+python -m lcom.plot outputs/<run>/lcom_*.nc
+```
+
+For each result file it writes four PNG files next to it:
+
+| File | Content |
+|---|---|
+| `…_map_lcom.png` | LCOM per pixel in 10 classes (deciles of the priced pixels) |
+| `…_map_electricity_share.png` | Share of the LCOM that is electricity (electrolysis, DAC, heat pump, synthesis) |
+| `…_distribution.png` | Histogram of the LCOM over the priced pixels, with median and P10 |
+| `…_countries.png` | Median and P10 to P90 per country, for the 30 countries with the most priced pixels |
+
+| Option | Effect |
+|---|---|
+| `--currency EUR\|USD` | Cost unit (default EUR, at the chain's 1.08238 USD/EUR) |
+| `--breaks V1 V2 …` | Class limits of the LCOM map; give the same limits to compare runs |
+| `--countries ISO3,…` | Countries of the country plot, in place of the 30 largest |
+| `--top N` | Number of countries in the country plot (default 30) |
+| `--out-dir DIR` | Output folder; default: next to each result file |
+
+Country borders are the edges between the cost keys of the result file, so the maps need no shapefile. Grey land
+has a cost key but no result.
+
 ### Method
 
 Per pixel, with `e` the LCOE (USD/MWh), `w` the WACC, `CF` the load factor, `p` the DAC relative productivity and

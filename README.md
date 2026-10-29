@@ -36,23 +36,29 @@ All process values are the paper's 2050 values, so the chain prices the LCOE yea
 
 ### Run
 
+Put the two files of one BOA run in `data/boa/<run>/` (git-ignored):
+
+| File | From the BOA data root |
+|---|---|
+| `optimal_lcoe_*.nc` | `lcoe-only/<run>/` |
+| `boa_cost_data.xlsx` | `costs/<cost_set>/`, with `<cost_set>` the `cost_set` attribute of the LCOE file |
+
 ```
 uv sync --extra lcom
-export BOA_DATA_ROOT=~/.boa            # the BOA data folder with the run's cost set
-python -m lcom.cli <BOA_DATA_ROOT>/lcoe-only/<run>/optimal_lcoe_wy2025_01MWkm2_cov0p9_2025_2060.nc
+python -m lcom.cli data/boa/<run>/optimal_lcoe_wy2025_01MWkm2_cov0p9_2025_2060.nc
 ```
 
 | Option | Effect |
 |---|---|
 | `--out-dir DIR` | Output folder (default `outputs/`); results go to `DIR/<run>/` |
-| `--data-root DIR` | BOA data root, in place of `BOA_DATA_ROOT` |
+| `--cost-workbook PATH` | The cost workbook, if it is not next to the LCOE file |
 | `--load-factor X` | Plant load factor in (0, 1]; default: the LCOE run's `coverage_fraction` |
 | `--wacc X` | One cost of capital for every pixel, in place of the regional WACC |
 
 For each LCOE file the run writes `lcom_<scenario>_y2050[_lf…][_wacc…].nc` (all cost layers in USD, the WACC and the
 LCOE), `…_assumptions_register.csv` (one row per input with value, unit and source) and `…_provenance.json`.
-It accepts LCOE files of BOA 1.8.0 and of BOA 1.9 or later (`schema_version` 1), and refuses a file whose cost
-workbook is not on disk or differs from the one that priced the LCOE.
+It accepts LCOE files of BOA 1.8.0 and of BOA 1.9 or later (`schema_version` 1), and refuses a workbook that
+differs from the one that priced the LCOE. BOA's cost cache goes to `cache_costs/` next to the workbook.
 
 ### Method
 

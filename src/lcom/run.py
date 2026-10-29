@@ -6,10 +6,11 @@ Reads ``optimal_lcoe_*.nc``, prices hydrogen, DAC CO2 and methanol per pixel for
 three files to ``<out_dir>/<run>/``: the result NetCDF, ``<stem>_assumptions_register.csv`` and
 ``<stem>_provenance.json``.
 
-The WACC is the one the LCOE was priced with. The LCOE file records the hash of the cost workbook
-it used (``input_data_sha256``); the run stops if the workbook of that cost set on disk has a
-different hash. Each pixel's cost key is resolved with ``single_point_run.costs_for_key``, the
-lookup BOA's own query uses, so national and global-average fallbacks match the LCOE exactly.
+The WACC is the one the LCOE was priced with. It comes from the BOA cost workbook of the run
+(``boa_cost_data.xlsx``), by default the copy next to the LCOE file. The LCOE file records the hash
+of the workbook it used (``input_data_sha256``); the run stops if the workbook has a different hash.
+Each pixel's cost key is resolved with ``single_point_run.costs_for_key``, the lookup BOA's own
+query uses, so national and global-average fallbacks match the LCOE exactly.
 
 Accepted LCOE layouts: ``schema_version`` 1 (BOA 1.9 and later, ``lcoe_basis`` per MWh
 delivered), and files without a schema version written by BOA 1.8.0, which have the same
@@ -29,7 +30,6 @@ from typing import Any
 import boa
 import numpy as np
 import xarray as xr
-from boa.config.paths import PathConfig, default_root
 from boa.inputs.costs import process_global_baseload_simulation_costs
 from boa.model.single_point_run import costs_for_key
 
@@ -53,6 +53,9 @@ SCHEMA_VERSIONS = (1,)
 LCOE_BASIS = "per_mwh_delivered"
 LEGACY_BOA_VERSIONS = ("1.8.0",)
 STATUS_OK = 1
+COST_WORKBOOK_NAME = "boa_cost_data.xlsx"
+REQUIRED_VARIABLES = ("lcoe", "cost_key_id", "status")
+REQUIRED_ATTRS = ("cost_key_legend", "coverage_fraction", "cost_set")
 ROUTE = "B: PEM electrolysis, direct CO2 hydrogenation, solid sorbent DAC with air-source heat pump"
 
 # Attributes carried from the LCOE file; all describe the LCOE run, not this one.
@@ -194,7 +197,7 @@ def _netcdf_attr(value: Any) -> Any:
 def run(
     lcoe_path: Path,
     out_dir: Path,
-    data_root: Path | None = None,
+    cost_workbook: Path | None = None,
     load_factor: float | None = None,
     wacc: float | None = None,
 ) -> RunResult:
@@ -204,16 +207,16 @@ def run(
     Args:
         lcoe_path: A promoted BOA LCOE file.
         out_dir: Output folder; results go to ``<out_dir>/<run>/``.
-        data_root: BOA data root that holds the run's cost set; default: BOA's own (``BOA_DATA_ROOT``).
+        cost_workbook: The BOA cost workbook of the LCOE run; default: ``boa_cost_data.xlsx`` next to
+            ``lcoe_path``. BOA's cost cache goes to ``cache_costs/`` next to the workbook.
         load_factor: Plant load factor in (0, 1]; default: the LCOE run's ``coverage_fraction``.
         wacc: One cost of capital for every pixel instead of the regional WACC (e.g. the paper's 0.08).
     """
     with xr.open_dataset(lcoe_path) as opened:
-        missing = {"lcoe", "cost_key_id", "status"} - set(opened.variables)
-        if missing or "cost_key_legend" not in opened.attrs:
-            raise LcoeFileError(
-                f"{lcoe_path.name} is not a promoted LCOE file (missing {sorted(missing) or 'cost_key_legend'})."
-            )
+        missing = [v for v in REQUIRED_VARIABLES if v not in opened.variables]
+        missing += [a for a in REQUIRED_ATTRS if a not in opened.attrs]
+        if missing:
+            raise LcoeFileError(f"{lcoe_path.name} is not a promoted LCOE file (missing {', '.join(missing)}).")
         attrs = dict(opened.attrs)
         layout = lcoe_layout(attrs, lcoe_path.name)
         years = [int(y) for y in opened["year"].values]
@@ -232,10 +235,12 @@ def run(
         raise ValueError(f"wacc must be in [0, 1), got {wacc}.")
 
     cost_set = str(attrs["cost_set"])
-    path_config = PathConfig.from_root(data_root or default_root(), cost_set=cost_set)
-    workbook = path_config.input_data_path
+    workbook = cost_workbook or lcoe_path.parent / COST_WORKBOOK_NAME
     if not workbook.exists():
-        raise LcoeFileError(f"cost set '{cost_set}' of {lcoe_path.name} is not on disk ({workbook}).")
+        raise LcoeFileError(
+            f"No cost workbook for {lcoe_path.name} at {workbook}: copy {COST_WORKBOOK_NAME} of BOA cost set "
+            f"'{cost_set}' next to the LCOE file, or give its path."
+        )
     expected_sha = str(attrs.get("input_data_sha256", ""))
     workbook_sha = file_sha256(workbook)
     if expected_sha and workbook_sha != expected_sha:
@@ -251,7 +256,7 @@ def run(
     legend = str(attrs["cost_key_legend"]).split(",")
     has_key = np.array([bool(key) for key in legend])[cost_key_id]
     if wacc is None:
-        costs, _ = process_global_baseload_simulation_costs(PRICED_YEAR, workbook, path_config.cost_cache_dir)
+        costs, _ = process_global_baseload_simulation_costs(PRICED_YEAR, workbook, workbook.parent / "cache_costs")
         wacc_layer = wacc_grid(legend, cost_key_id, costs)
         wacc_basis = "regional Renewables WACC of the LCOE run (Cost of capital sheet)"
     else:

@@ -2,6 +2,9 @@
 workflow/scripts/data/
 workflow/scripts/output/
 
+# BOA LCOE files and cost workbooks for the LCOM chain
+data/boa/
+
 # LCOM run outputs
 outputs/
 

@@ -16,9 +16,9 @@ from lcom.run import LcoeFileError, file_sha256, run
 COST_SET = "default"
 RUN = "wy2025_test_ab12"
 COVERAGE = 0.9
-WACC = {"DEU": 0.055, "IND": 0.073, "CHN": 0.06}
+WACC = {"DEU": 0.055, "IND": 0.073, "CHN": 0.06, "GRL": 0.0877}
 # Index = cost_key_id. Empty key, a province whose key is not in the costs (falls back to CHN), the
-# global average marker, and Greenland (excluded).
+# global average marker, and Greenland.
 LEGEND = ",DEU,IND,GRL,CHN:CN-GS,UNKNOWN:GLOBAL_AVG"
 LCOE_NAME = "optimal_lcoe_wy2025_01MWkm2_cov0p9_2045_2050.nc"
 
@@ -143,7 +143,7 @@ def test_run_writes_result_register_and_provenance(root, lcoe_path, tmp_path):
             assert key in out.attrs["data_flags"]
     provenance = json.loads(result.provenance.read_text(encoding="utf-8"))
     assert provenance["usd_per_eur"]["value"] == pytest.approx(1.08238046875)
-    assert provenance["wacc"]["pixels_priced"] == 5
+    assert provenance["wacc"]["pixels_priced"] == 6
 
 
 def test_each_pixel_uses_its_lcoe_and_wacc(root, lcoe_path, tmp_path):
@@ -165,7 +165,7 @@ def test_province_and_global_average_keys_follow_boa(root, lcoe_path, tmp_path):
         assert _at(out, "wacc", 1, 1) == pytest.approx(np.mean(list(WACC.values())))  # UNKNOWN:GLOBAL_AVG
 
 
-def test_pixels_without_a_result_stay_empty_and_greenland_is_excluded(root, lcoe_path, tmp_path):
+def test_pixels_without_a_result_stay_empty(root, lcoe_path, tmp_path):
     result = run(lcoe_path, tmp_path / "out", data_root=root)
 
     with xr.open_dataset(result.netcdf) as out:
@@ -174,8 +174,7 @@ def test_pixels_without_a_result_stay_empty_and_greenland_is_excluded(root, lcoe
         assert np.isnan(_at(out, "lcom_usd_per_mwh", 1, 0))  # status 3
         assert np.isnan(_at(out, "lcom_usd_per_mwh", 1, 2))  # LCOE NaN
         assert np.isnan(_at(out, "lcom_usd_per_mwh", 1, 4))  # LCOE 0 (legacy "no optimum")
-        assert np.isnan(_at(out, "lcom_usd_per_mwh", 0, 3))  # GRL
-        assert "domain.greenland" in out.attrs["data_flags"]
+        assert _at(out, "lcom_usd_per_mwh", 0, 3) == pytest.approx(_expected_lcom(80.0, 0.0877), rel=1e-6)  # GRL
 
 
 def test_legacy_layout_is_accepted_and_recorded(root, tmp_path):

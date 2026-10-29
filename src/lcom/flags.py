@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 STATUS_DEVIATES = "deviates-from-cited-source"
 STATUS_STAND_IN = "country-stand-in-for-region"
 STATUS_NOT_IDENTIFIED = "source-not-identified"
-STATUS_EXCLUDED = "pixels-excluded"
 STATUS_SIMPLIFIED = "simplification"
 STATUS_UNCONSTRAINED = "constraint-not-applied"
 
@@ -189,12 +188,6 @@ STANDING_FLAGS: tuple[DataFlag, ...] = (
         "by country (ctryprem, January 2026) plus a common risk-free rate and a beta of about 1.13, but the "
         "derivation, the cost of debt and the capital structure are not recorded. This chain uses the same "
         "WACC for every stage, so the flag applies to every cost it reports.",
-    ),
-    DataFlag(
-        "domain.greenland",
-        STATUS_EXCLUDED,
-        "Greenland is not priced. The BOA regions leave Greenland between 50W and 25W and north of 72N "
-        "outside the model, so only two coastal strips (about 16 % of its land south of 72N) have an LCOE.",
     ),
 )
 

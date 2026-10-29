@@ -53,8 +53,6 @@ SCHEMA_VERSIONS = (1,)
 LCOE_BASIS = "per_mwh_delivered"
 LEGACY_BOA_VERSIONS = ("1.8.0",)
 STATUS_OK = 1
-# Countries left unpriced because the BOA regions cover only part of their land (flag ``domain.greenland``).
-EXCLUDED_ISO3 = frozenset({"GRL"})
 ROUTE = "B: PEM electrolysis, direct CO2 hydrogenation, solid sorbent DAC with air-source heat pump"
 
 # Attributes carried from the LCOE file; all describe the LCOE run, not this one.
@@ -252,7 +250,6 @@ def run(
 
     legend = str(attrs["cost_key_legend"]).split(",")
     has_key = np.array([bool(key) for key in legend])[cost_key_id]
-    excluded = np.array([key.split(":")[0] in EXCLUDED_ISO3 for key in legend])[cost_key_id]
     if wacc is None:
         costs, _ = process_global_baseload_simulation_costs(PRICED_YEAR, workbook, path_config.cost_cache_dir)
         wacc_layer = wacc_grid(legend, cost_key_id, costs)
@@ -260,7 +257,7 @@ def run(
     else:
         wacc_layer = np.where(has_key, wacc, np.nan)
         wacc_basis = f"fixed override {wacc} for every pixel"
-    valid = (status == STATUS_OK) & np.isfinite(lcoe) & (lcoe > 0) & np.isfinite(wacc_layer) & ~excluded
+    valid = (status == STATUS_OK) & np.isfinite(lcoe) & (lcoe > 0) & np.isfinite(wacc_layer)
 
     params = route_b_params()
     layers = price(lcoe, wacc_layer, valid, lf, params)

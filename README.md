@@ -68,7 +68,7 @@ LCOM = LCOH / eta_syn + e * elec_syn + co2_syn * CO2                            
        + (capex_syn * CRF(w, n_syn) + fom_syn) / (8760 * CF)
 ```
 
-- **Pixels:** only pixels with `status == 1`, a positive finite LCOE and a cost key. Greenland is not priced.
+- **Pixels:** only pixels with `status == 1`, a positive finite LCOE and a cost key.
 - **WACC:** the `Renewables` cost of capital of the pixel's cost key in the LCOE run's cost workbook, for every
   stage. Province keys fall back to the country and unknown keys to the global average, as in BOA.
 - **Load factor:** every plant runs `8760 * CF` hours on the firm BOA power.

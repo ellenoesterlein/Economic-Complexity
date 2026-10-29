@@ -19,13 +19,32 @@ uv sync --extra lcom    # also the LCOM chain (installs BOA from GitHub)
 ## Economic complexity (ECI, PCI)
 
 ```
-python "workflow/scripts/PCI, ECI, RCA.py"
+python -m economic_complexity.cli --year 2024
 ```
 
-- Input: `workflow/scripts/data/BACI_HS22_Y<YEAR>_V202601.csv`. Download it from CEPII (see
-  `workflow/Readme.txt`). The year is set in `Config.YEAR` in the script.
-- Output: `workflow/scripts/output/ECI_PCI_HS<level>_Y<YEAR>.xlsx` with the sheets `ECI_ranking`, `PCI_ranking`
-  and `RCA>=1`.
+| Option | Effect |
+|---|---|
+| `--year YEAR` | BACI year (default 2024) |
+| `--product-level N` | HS digits of a product: 2, 4 or 6 (default 6) |
+| `--data-dir DIR` | Folder of the BACI file (default `data/`) |
+| `--out-dir DIR` | Output folder (default `outputs/`) |
+| `--chunksize N` | BACI rows read per chunk (default 1,000,000) |
+| `--eigenvalues N` | Eigenvalues computed (default 6) |
+
+- Input: `<data-dir>/BACI_HS22_Y<YEAR>_V202601.csv`. Download it from CEPII (see `workflow/Readme.txt`).
+- Output: `<out-dir>/ECI_PCI_HS<level>_Y<YEAR>.xlsx` with the sheets `ECI_ranking`, `PCI_ranking` and `RCA>=1`.
+- `python "workflow/scripts/PCI, ECI, RCA.py"` runs the same calculation with the folders `workflow/scripts/data/`
+  and `workflow/scripts/output/`. It accepts the same options.
+
+Method (`src/economic_complexity/`):
+
+1. `rca.compute_rca`: sums the exports per exporter and product. Product codes get their leading zeros back and are
+   cut to the product level. `M_cp = 1` where the Balassa RCA is 1 or more.
+2. `rca.build_mcp_matrix`: the sparse matrix M (countries x products), diversity `k_c` and ubiquity `k_p`.
+3. `complexity.compute_eci` / `compute_pci`: the eigenvectors of `D^-1 A`, with `A = M diag(1/k_p) M^T` for
+   countries and `A = M^T diag(1/k_c) M` for products, come from the similar symmetric matrix `D^-1/2 A D^-1/2`.
+   ECI and PCI are the z-scored second eigenvector. ECI correlates positively with diversity, PCI negatively with
+   ubiquity. A second eigenvalue near 1 (a disconnected graph) gives a warning.
 
 ## Levelised cost of methanol (LCOM)
 

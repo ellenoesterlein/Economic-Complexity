@@ -51,7 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--product-level", type=int, default=6, choices=(2, 4, 6), help="HS digits of a product (default: 6)."
     )
-    parser.add_argument("--data-dir", type=Path, default=Path("data"), help="Folder of the BACI CSV (default: data).")
+    parser.add_argument(
+        "--data-dir", type=Path, default=Path("data/baci"), help="Folder of the BACI CSV (default: data/baci)."
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("outputs"), help="Output folder (default: outputs).")
     parser.add_argument("--chunksize", type=int, default=1_000_000, help="BACI rows read per chunk.")
     parser.add_argument(

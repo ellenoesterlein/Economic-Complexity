@@ -1,15 +1,10 @@
 import logging
-import runpy
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from economic_complexity.cli import main
-
-SCRIPT = Path(__file__).parents[1] / "workflow" / "scripts" / "PCI, ECI, RCA.py"
 
 
 def _write_baci(data_dir: Path, year: int, seed: int = 0) -> None:
@@ -49,11 +44,10 @@ def test_cli_without_input_file_fails(tmp_path, caplog):
     assert not (tmp_path / "out").exists()
 
 
-def test_script_reads_the_folder_next_to_it(monkeypatch, caplog):
-    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--year", "1900"])
+def test_default_data_dir_is_the_baci_folder(monkeypatch, tmp_path, caplog):
+    monkeypatch.chdir(tmp_path)
 
-    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exit_info:
-        runpy.run_path(str(SCRIPT), run_name="__main__")
+    with caplog.at_level(logging.ERROR):
+        main(["--year", "1900"])
 
-    assert exit_info.value.code == 1
-    assert str(SCRIPT.parent / "data" / "BACI_HS22_Y1900_V202601.csv") in caplog.text
+    assert str(Path("data/baci/BACI_HS22_Y1900_V202601.csv")) in caplog.text

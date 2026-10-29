@@ -26,15 +26,14 @@ python -m economic_complexity.cli --year 2024
 |---|---|
 | `--year YEAR` | BACI year (default 2024) |
 | `--product-level N` | HS digits of a product: 2, 4 or 6 (default 6) |
-| `--data-dir DIR` | Folder of the BACI file (default `data/`) |
+| `--data-dir DIR` | Folder of the BACI file (default `data/baci/`) |
 | `--out-dir DIR` | Output folder (default `outputs/`) |
 | `--chunksize N` | BACI rows read per chunk (default 1,000,000) |
 | `--eigenvalues N` | Eigenvalues computed (default 6) |
 
-- Input: `<data-dir>/BACI_HS22_Y<YEAR>_V202601.csv`. Download it from CEPII (see `workflow/Readme.txt`).
+- Input: `<data-dir>/BACI_HS22_Y<YEAR>_V202601.csv`. Download it from CEPII (see
+  [data/baci/README.md](data/baci/README.md), which also describes the country and product lookup tables).
 - Output: `<out-dir>/ECI_PCI_HS<level>_Y<YEAR>.xlsx` with the sheets `ECI_ranking`, `PCI_ranking` and `RCA>=1`.
-- `python "workflow/scripts/PCI, ECI, RCA.py"` runs the same calculation with the folders `workflow/scripts/data/`
-  and `workflow/scripts/output/`. It accepts the same options.
 
 Method (`src/economic_complexity/`):
 

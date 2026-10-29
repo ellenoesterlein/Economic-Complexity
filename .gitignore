@@ -1,7 +1,5 @@
-# BACI input (files are several GB): data/ for the CLI, workflow/scripts/data/ for the script
-data/
-workflow/scripts/data/
-workflow/scripts/output/
+# BACI trade files (several GB); the lookup tables next to them are tracked
+data/baci/BACI_*.csv
 
 # BOA LCOE files and cost workbooks for the LCOM chain
 data/boa/

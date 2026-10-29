@@ -1,11 +1,11 @@
-# BACI input and ECI output of workflow/scripts/PCI, ECI, RCA.py (BACI files are several GB)
-workflow/scripts/data/
-workflow/scripts/output/
+# Input data is local: everything in data/ except the BACI notes and lookup tables
+data/**
+!data/**/
+!data/baci/README.md
+!data/baci/country_codes_V202601.csv
+!data/baci/product_codes_HS22_V202601.csv
 
-# BOA LCOE files and cost workbooks for the LCOM chain
-data/boa/
-
-# LCOM run outputs
+# ECI and LCOM outputs
 outputs/
 
 .venv/

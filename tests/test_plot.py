@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -6,6 +7,7 @@ from lcom.paper_inputs import USD_PER_EUR
 from lcom.plot import (
     BREAKDOWN_ITEMS,
     border_segments,
+    breakdown_groups,
     breakdown_stats,
     class_breaks,
     country_stats,
@@ -134,6 +136,22 @@ def test_breakdown_takes_the_cheapest_share_of_each_country(tmp_path):
         breakdown_stats(items, ["FRA"])
 
 
+def test_breakdown_groups_cheapest_interest_and_most_expensive(capsys):
+    stats = pd.DataFrame(
+        {"pixels": [100, 5, 50, 30, 200], "lcom_mean": [400.0, 300.0, 600.0, 900.0, 1200.0]},
+        index=pd.Index(["AAA", "TTO", "CCC", "DDD", "EEE"], name="iso3"),
+    ).sort_values("lcom_mean")
+
+    groups = dict(breakdown_groups(stats, cheapest=2, interest=["TTO", "CCC", "XXX"], expensive=1, min_pixels=20))
+
+    assert list(groups) == ["Cheapest 2", "Countries of interest", "Most expensive 1"]
+    assert list(groups["Cheapest 2"].index) == ["AAA", "CCC"]  # TTO is cheaper but has 5 pixels
+    assert list(groups["Countries of interest"].index) == ["TTO", "CCC"]
+    assert list(groups["Most expensive 1"].index) == ["EEE"]
+    assert "no priced pixels for XXX" in capsys.readouterr().err
+    assert [title for title, _ in breakdown_groups(stats, 0, [], 0)] == []
+
+
 def test_result_without_items_has_no_breakdown(tmp_path):
     with pytest.raises(ValueError, match="no cost items"):
         load_items(_result(tmp_path / "lcom.nc", items=False))
@@ -143,12 +161,14 @@ def test_cli_writes_the_plots_and_refuses_bad_breaks(tmp_path, capsys):
     path = _result(tmp_path / "lcom_test.nc")
     out = tmp_path / "plots"
 
-    assert main([str(path), "--out-dir", str(out), "--top", "2"]) == 0
+    assert main([str(path), "--out-dir", str(out), "--top", "2", "--interest", "DEU"]) == 0
     names = sorted(p.name for p in out.iterdir())
     assert names == sorted(
         [f"lcom_test_{kind}.png" for kind in ("countries", "distribution", "map_electricity_share", "map_lcom")]
         + ["lcom_test_breakdown_top5.png", "lcom_test_breakdown_top5.csv"]
     )
+    table = pd.read_csv(out / "lcom_test_breakdown_top5.csv", index_col="iso3")
+    assert set(table.index) == {"DEU", "CHN"}  # every country, not only the plotted ones
     without = _result(tmp_path / "lcom_old.nc", items=False)
     assert main([str(without), "--out-dir", str(out), "--top", "2"]) == 0
     assert "no breakdown plot" in capsys.readouterr().err

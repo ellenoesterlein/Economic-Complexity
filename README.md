@@ -112,15 +112,17 @@ For each result file it writes these files next to it:
 | `…_map_electricity_share.png` | Share of the LCOM that is electricity (electrolysis, DAC, heat pump, synthesis) |
 | `…_distribution.png` | Histogram of the LCOM over the priced pixels, with median and P10 |
 | `…_countries.png` | Median and P10 to P90 per country, for the 30 countries with the most priced pixels |
-| `…_breakdown_top5.png`, `.csv` | For the same countries: the mean cost items of the cheapest 5 % of each country's pixels (electricity from solar, wind and battery; electrolyser, DAC, heat pump, synthesis), with P10 to P90 of each electricity part |
+| `…_breakdown_top5.png`, `.csv` | Mean cost items of the cheapest 5 % of each country's pixels (electricity from solar, wind and battery; electrolyser, DAC, heat pump, synthesis), with P10 to P90 of each electricity part. The plot shows the 10 cheapest countries, the countries of interest and the 5 most expensive (cheapest and most expensive only of countries with 20 or more priced pixels); the CSV has every country |
 
 | Option | Effect |
 |---|---|
 | `--currency EUR\|USD` | Cost unit (default EUR, at the chain's 1.08238 USD/EUR) |
 | `--breaks V1 V2 …` | Class limits of the LCOM map; give the same limits to compare runs |
 | `--countries ISO3,…` | Countries of the country plot, in place of the 30 largest |
-| `--top N` | Number of countries in the country and breakdown plots (default 30) |
-| `--share X` | Share of each country's cheapest pixels in the breakdown plot (default 0.05) |
+| `--top N` | Number of countries in the country plot (default 30) |
+| `--share X` | Share of each country's cheapest pixels in the breakdown (default 0.05) |
+| `--cheapest N`, `--expensive N` | Cheapest and most expensive countries in the breakdown plot (default 10 and 5) |
+| `--interest ISO3,…` | Countries of interest in the breakdown plot (default TTO, CHN, IRN, SAU, OMN, USA, RUS, CHL, DEU, JPN) |
 | `--out-dir DIR` | Output folder; default: next to each result file |
 
 Country borders are the edges between the cost keys of the result file, so the maps need no shapefile. Grey land

@@ -3,8 +3,14 @@ Run the Route B chain over one promoted BOA LCOE file.
 
 Reads ``optimal_lcoe_*.nc``, prices hydrogen, DAC CO2 and methanol per pixel for the LCOE year
 2050 (the year of the paper's process data) from each pixel's LCOE and regional WACC, and writes
-three files to ``<out_dir>/<run>/``: the result NetCDF, ``<stem>_assumptions_register.csv`` and
-``<stem>_provenance.json``.
+three files to ``<out_dir>/<run>/<scenario>/`` (e.g. ``y2050_full-load``): the result NetCDF,
+``<stem>_assumptions_register.csv`` and ``<stem>_provenance.json``. ``lcom.plot`` and ``lcom.compare`` add
+``figures/`` and ``tables/`` to that folder.
+
+The BOA solution file of 2050 (``optimal_sol_*_GLOBAL_2050.nc``, by default next to the LCOE file)
+supplies the coverage, the served fraction and the solar, wind and battery cost of each pixel. They set
+the plant operation (see ``lcom.electricity``) and split the electricity cost by technology. The result
+holds the LCOM split into cost items (``lcom_item_*_usd_per_t``) and both operation bounds.
 
 The WACC is the one the LCOE was priced with. It comes from the BOA cost workbook of the run
 (``boa_cost_data.xlsx``), by default the copy next to the LCOE file. The LCOE file records the hash
@@ -30,12 +36,31 @@ from typing import Any
 import boa
 import numpy as np
 import xarray as xr
+from boa.config.physical_parameters import LIFETIMES
 from boa.inputs.costs import process_global_baseload_simulation_costs
 from boa.model.single_point_run import costs_for_key
 
 from lcom import register
-from lcom.chain import co2_cost, lcoh, lcom
-from lcom.flags import CHAIN_FLAGS, STANDING_FLAGS, check_cost_workbook_flags, lcoe_file_flags, log_flags
+from lcom.chain import co2_cost, cost_items, lcoh, lcom
+from lcom.constants import KWH_PER_KG_METHANOL_LHV
+from lcom.electricity import (
+    FULL_LOAD,
+    OPERATIONS,
+    PART_LOAD,
+    TECHS,
+    find_solution_file,
+    lcoe_split,
+    operation_layers,
+    read_solution,
+)
+from lcom.flags import (
+    CHAIN_FLAGS,
+    STANDING_FLAGS,
+    check_cost_workbook_flags,
+    lcoe_file_flags,
+    log_flags,
+    operation_flags,
+)
 from lcom.paper_inputs import (
     ECB_ACCESSED,
     ECB_SERIES,
@@ -100,6 +125,27 @@ OUTPUT_VARIABLES: dict[str, tuple[str, str]] = {
     "lcom_co2_usd_per_mwh": ("USD/MWh_MeOH", "LCOM: CO2 feed"),
     "lcom_capital_usd_per_mwh": ("USD/MWh_MeOH", "LCOM: synthesis-plant capital charge"),
     "lcom_fom_usd_per_mwh": ("USD/MWh_MeOH", "LCOM: synthesis-plant fixed O&M"),
+    "coverage": ("fraction", "BOA: share of the hours with the whole load met"),
+    "served_fraction": ("fraction", "BOA: share of the baseload energy delivered"),
+    "load_factor": ("fraction", "Share of the hours every plant runs at full load"),
+    "electricity_price": ("USD/MWh", "Price of the electricity the plants use: LCOE * served / load factor"),
+    **{f"lcoe_{tech}": ("USD/MWh", f"LCOE: {tech} (per MWh delivered)") for tech in TECHS},
+    "lcom_item_electrolyser_usd_per_t": ("USD/t_MeOH", "LCOM item: electrolyser capital charge and fixed O&M"),
+    "lcom_item_dac_usd_per_t": ("USD/t_MeOH", "LCOM item: DAC plant capital charge and fixed O&M"),
+    "lcom_item_heat_pump_usd_per_t": ("USD/t_MeOH", "LCOM item: heat pump capital charge and fixed O&M"),
+    "lcom_item_synthesis_usd_per_t": ("USD/t_MeOH", "LCOM item: synthesis plant capital charge and fixed O&M"),
+    "lcom_item_electricity_electrolysis_usd_per_t": ("USD/t_MeOH", "LCOM item: electricity of the electrolyser"),
+    "lcom_item_electricity_dac_usd_per_t": ("USD/t_MeOH", "LCOM item: electricity of DAC and heat pump"),
+    "lcom_item_electricity_synthesis_usd_per_t": ("USD/t_MeOH", "LCOM item: electricity of the synthesis plant"),
+    **{
+        f"lcom_item_electricity_{tech}_usd_per_t": (
+            "USD/t_MeOH",
+            f"LCOM electricity of all stages, {tech} part (a second split of the three electricity items)",
+        )
+        for tech in TECHS
+    },
+    "lcom_full_load_usd_per_t": ("USD/t_MeOH", "LCOM with full-load operation in the fully met hours (bound)"),
+    "lcom_part_load_usd_per_t": ("USD/t_MeOH", "LCOM with part-load operation in the partly met hours (bound)"),
 }
 
 
@@ -134,27 +180,53 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def wacc_grid(legend: list[str], cost_key_id: np.ndarray, costs: xr.Dataset) -> np.ndarray:
-    """WACC per pixel from the pixel's cost key; NaN where the pixel has no cost key."""
-    per_key = np.full(len(legend), np.nan)
+def key_costs(
+    legend: list[str], cost_key_id: np.ndarray, costs: xr.Dataset
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """WACC and fixed O&M share per technology for each pixel from its cost key; NaN without a cost key."""
+    wacc = np.full(len(legend), np.nan)
+    opex = {tech: np.full(len(legend), np.nan) for tech in TECHS}
     for i, key in enumerate(legend):
         if key:  # costs_for_key("") would return the global average
-            per_key[i] = costs_for_key(key, costs)[2]
-    return per_key[cost_key_id]
+            _, opex_pct, wacc[i] = costs_for_key(key, costs)
+            for tech in TECHS:
+                opex[tech][i] = float(opex_pct[tech])
+    return wacc[cost_key_id], {tech: values[cost_key_id] for tech, values in opex.items()}
 
 
 def price(
-    lcoe: np.ndarray, wacc: np.ndarray, valid: np.ndarray, load_factor: float, params: RouteBParams
+    lcoe: np.ndarray,
+    wacc: np.ndarray,
+    valid: np.ndarray,
+    load_factor: float | np.ndarray,
+    params: RouteBParams,
+    price_factor: float | np.ndarray = 1.0,
+    lcoe_parts: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
-    """All output layers for one year; NaN where ``valid`` is False."""
-    e = np.where(valid, lcoe, 1.0)  # placeholder values keep the arithmetic finite; masked below
+    """
+    All output layers for one year; NaN where ``valid`` is False. The plants pay ``lcoe * price_factor`` for
+    their electricity. ``lcoe_parts`` (LCOE per technology) splits the electricity items by technology.
+    """
+    e = np.where(valid, lcoe * price_factor, 1.0)  # placeholder values keep the arithmetic finite; masked below
     w = np.where(valid, wacc, 0.05)
     hydrogen = lcoh(e, w, load_factor, params.electrolysis)
     co2 = co2_cost(e, w, load_factor, params.dac, params.heat_pump)
     methanol = lcom(e, w, load_factor, hydrogen, co2, params.methanol)
+    items = {
+        name: value * KWH_PER_KG_METHANOL_LHV
+        for name, value in cost_items(hydrogen, co2, methanol, params.methanol).items()
+    }
+    electricity = sum(items[f"electricity_{stage}"] for stage in ("electrolysis", "dac", "synthesis"))
+    if lcoe_parts is not None:
+        safe_lcoe = np.where(valid, lcoe, 1.0)
+        for tech in TECHS:
+            items[f"electricity_{tech}"] = electricity * np.where(valid, lcoe_parts[tech], 0.0) / safe_lcoe
     layers = {
         "lcoe": lcoe,
         "wacc": wacc,
+        "load_factor": np.broadcast_to(load_factor, np.shape(lcoe)),
+        "electricity_price": e,
+        **{f"lcom_item_{name}_usd_per_t": value for name, value in items.items()},
         "lcoh_usd_per_mwh": hydrogen.total,
         "lcoh_usd_per_kg": hydrogen.usd_per_kg(),
         "lcoh_electricity_usd_per_mwh": hydrogen.electricity,
@@ -175,14 +247,44 @@ def price(
     return {name: np.where(valid, layer, np.nan).astype(np.float32) for name, layer in layers.items()}
 
 
+def operation_bounds(
+    lcoe: np.ndarray,
+    wacc: np.ndarray,
+    valid: np.ndarray,
+    coverage: np.ndarray,
+    served: np.ndarray,
+    params: RouteBParams,
+) -> dict[str, np.ndarray]:
+    """LCOM per tonne with full-load and with part-load operation (``lcom.electricity``)."""
+    bounds = {}
+    for operation in (FULL_LOAD, PART_LOAD):
+        cf, factor = operation_layers(operation, coverage, served, valid)
+        name = "lcom_full_load_usd_per_t" if operation == FULL_LOAD else "lcom_part_load_usd_per_t"
+        bounds[name] = price(lcoe, wacc, valid, cf, params, factor)["lcom_usd_per_t"]
+    return bounds
+
+
 def _number_token(value: float) -> str:
     return f"{value:g}".replace(".", "p")
 
 
-def output_stem(lcoe_path: Path, year: int, load_factor: float | None, wacc: float | None) -> str:
+def scenario_name(year: int, load_factor: float | None, wacc: float | None, operation: str = FULL_LOAD) -> str:
+    """Folder of one result in its run folder, e.g. ``y2050_full-load`` or ``y2050_lf0p85_wacc0p08``."""
+    name = f"y{year}_" + (f"lf{_number_token(load_factor)}" if load_factor is not None else operation)
+    return name + (f"_wacc{_number_token(wacc)}" if wacc is not None else "")
+
+
+def output_stem(
+    lcoe_path: Path, year: int, load_factor: float | None, wacc: float | None, operation: str = FULL_LOAD
+) -> str:
     stem = lcoe_path.stem.removeprefix("optimal_lcoe_")
-    suffix = "".join(f"_{tag}{_number_token(v)}" for tag, v in (("lf", load_factor), ("wacc", wacc)) if v is not None)
+    suffix = "_partload" if operation == PART_LOAD and load_factor is None else ""
+    suffix += "".join(f"_{tag}{_number_token(v)}" for tag, v in (("lf", load_factor), ("wacc", wacc)) if v is not None)
     return f"lcom_{stem}_y{year}{suffix}"
+
+
+def _median(layer: np.ndarray, valid: np.ndarray) -> float:
+    return float(np.median(layer[valid])) if valid.any() else float("nan")
 
 
 def _netcdf_attr(value: Any) -> Any:
@@ -200,6 +302,8 @@ def run(
     cost_workbook: Path | None = None,
     load_factor: float | None = None,
     wacc: float | None = None,
+    solution_path: Path | None = None,
+    operation: str = FULL_LOAD,
 ) -> RunResult:
     """
     Price Route B methanol for every pixel of ``lcoe_path`` in the LCOE year 2050.
@@ -209,8 +313,12 @@ def run(
         out_dir: Output folder; results go to ``<out_dir>/<run>/``.
         cost_workbook: The BOA cost workbook of the LCOE run; default: ``boa_cost_data.xlsx`` next to
             ``lcoe_path``. BOA's cost cache goes to ``cache_costs/`` next to the workbook.
-        load_factor: Plant load factor in (0, 1]; default: the LCOE run's ``coverage_fraction``.
+        load_factor: A fixed plant load factor in (0, 1] in place of ``operation``; it must not be more than
+            the served fraction of any pixel.
         wacc: One cost of capital for every pixel instead of the regional WACC (e.g. the paper's 0.08).
+        solution_path: The BOA solution file of 2050; default: ``optimal_sol_*_GLOBAL_2050.nc`` next to
+            ``lcoe_path``.
+        operation: ``full-load`` (default) or ``part-load``; see ``lcom.electricity``.
     """
     with xr.open_dataset(lcoe_path) as opened:
         missing = [v for v in REQUIRED_VARIABLES if v not in opened.variables]
@@ -227,10 +335,10 @@ def run(
         status = opened["status"].values
         lat, lon = opened["lat"].values, opened["lon"].values
 
-    coverage = float(attrs["coverage_fraction"])
-    lf = coverage if load_factor is None else float(load_factor)
-    if not 0 < lf <= 1:
-        raise ValueError(f"load_factor must be in (0, 1], got {lf}.")
+    if operation not in OPERATIONS:
+        raise ValueError(f"operation must be one of {', '.join(OPERATIONS)}, got {operation!r}.")
+    if load_factor is not None and not 0 < load_factor <= 1:
+        raise ValueError(f"load_factor must be in (0, 1], got {load_factor}.")
     if wacc is not None and not 0 <= wacc < 1:
         raise ValueError(f"wacc must be in [0, 1), got {wacc}.")
 
@@ -249,34 +357,69 @@ def run(
             f"built with ({expected_sha[:12]}); the regional WACC could differ from the LCOE's."
         )
 
+    solution = read_solution(
+        solution_path or find_solution_file(lcoe_path.parent, PRICED_YEAR), attrs, lcoe, lat, lon, PRICED_YEAR
+    )
+
     flag_results = check_cost_workbook_flags(workbook)
-    file_flags = lcoe_file_flags(attrs)
+    file_flags = lcoe_file_flags(attrs) + operation_flags(operation, load_factor is not None)
     log_flags(flag_results, file_flags)
 
     legend = str(attrs["cost_key_legend"]).split(",")
     has_key = np.array([bool(key) for key in legend])[cost_key_id]
+    costs, _ = process_global_baseload_simulation_costs(PRICED_YEAR, workbook, workbook.parent / "cache_costs")
+    regional_wacc, opex_pct = key_costs(legend, cost_key_id, costs)
     if wacc is None:
-        costs, _ = process_global_baseload_simulation_costs(PRICED_YEAR, workbook, workbook.parent / "cache_costs")
-        wacc_layer = wacc_grid(legend, cost_key_id, costs)
+        wacc_layer = regional_wacc
         wacc_basis = "regional Renewables WACC of the LCOE run (Cost of capital sheet)"
     else:
         wacc_layer = np.where(has_key, wacc, np.nan)
         wacc_basis = f"fixed override {wacc} for every pixel"
-    valid = (status == STATUS_OK) & np.isfinite(lcoe) & (lcoe > 0) & np.isfinite(wacc_layer)
+    served, coverage = solution.served_fraction, solution.coverage
+    valid = (
+        (status == STATUS_OK)
+        & np.isfinite(lcoe)
+        & (lcoe > 0)
+        & np.isfinite(wacc_layer)
+        & np.isfinite(served)
+        & np.isfinite(coverage)
+        & (coverage > 0)
+    )
+    lcoe_parts = lcoe_split(solution, opex_pct, LIFETIMES, valid)
 
     params = route_b_params()
-    layers = price(lcoe, wacc_layer, valid, lf, params)
+    cf, price_factor = operation_layers(operation, coverage, served, valid, load_factor)
+    layers = price(lcoe, wacc_layer, valid, cf, params, price_factor, lcoe_parts)
+    layers.update(operation_bounds(lcoe, wacc_layer, valid, coverage, served, params))
+    layers["coverage"] = np.where(valid, coverage, np.nan).astype(np.float32)
+    layers["served_fraction"] = np.where(valid, served, np.nan).astype(np.float32)
+    layers.update({f"lcoe_{tech}": part.astype(np.float32) for tech, part in lcoe_parts.items()})
     logger.info("Priced %d: %d pixels.", PRICED_YEAR, int(valid.sum()))
 
-    stem = output_stem(lcoe_path, PRICED_YEAR, load_factor, wacc)
-    run_dir = out_dir / str(attrs.get("run", "unknown_run"))
+    stem = output_stem(lcoe_path, PRICED_YEAR, load_factor, wacc, operation)
+    run_dir = out_dir / str(attrs.get("run", "unknown_run")) / scenario_name(PRICED_YEAR, load_factor, wacc, operation)
     run_dir.mkdir(parents=True, exist_ok=True)
     paths = RunResult(
         run_dir / f"{stem}.nc", run_dir / f"{stem}_assumptions_register.csv", run_dir / f"{stem}_provenance.json"
     )
 
     created_at = datetime.now(UTC).isoformat(timespec="seconds")
-    load_factor_basis = "coverage_fraction of the LCOE run" if load_factor is None else "command-line override"
+    if load_factor is not None:
+        load_factor_basis = f"fixed override {load_factor}; price LCOE * served / {load_factor}"
+    elif operation == FULL_LOAD:
+        load_factor_basis = "full load in the fully met hours: coverage per pixel; price LCOE * served / coverage"
+    else:
+        load_factor_basis = "part load in the partly met hours: served fraction per pixel; price LCOE"
+    median_names = (
+        "load_factor",
+        "coverage",
+        "served_fraction",
+        "lcom_usd_per_t",
+        "lcom_full_load_usd_per_t",
+        "lcom_part_load_usd_per_t",
+        *(f"lcoe_{tech}" for tech in TECHS),
+    )
+    medians = {name: _median(layers[name], valid) for name in median_names}
     data_flags = ",".join(f.key for f in (*(r.flag for r in flag_results), *STANDING_FLAGS, *CHAIN_FLAGS, *file_flags))
     carried = {k: attrs[k] for k in CARRIED_ATTRS if k in attrs}
     out_attrs = {
@@ -290,8 +433,9 @@ def run(
         "process_data": PAPER,
         "usd_per_eur": USD_PER_EUR,
         "usd_per_eur_source": f"ECB {ECB_SERIES}, 2024 annual average, accessed {ECB_ACCESSED}",
-        "load_factor": lf,
+        "operation": "fixed load factor" if load_factor is not None else operation,
         "load_factor_basis": load_factor_basis,
+        "solution_file": solution.path.name,
         "wacc_basis": wacc_basis,
         "dac_productivity": params.dac.productivity,
         "data_flags": data_flags,
@@ -342,12 +486,14 @@ def run(
             "stage": "boa",
             "parameter": "load_factor",
             "year": "all",
-            "value": lf,
-            "unit": "fraction",
-            "source": f"{load_factor_basis}; ERA5 weather year {attrs.get('era5_weather_year', '')}",
+            "value": medians["load_factor"],
+            "unit": "fraction (median over priced pixels)",
+            "source": f"{load_factor_basis}; {solution.path.name}; ERA5 weather year "
+            f"{attrs.get('era5_weather_year', '')}",
             "status": "boa-run" if load_factor is None else "override",
-            "basis": "share of hours every plant runs",
-            "data_flags": "",
+            "basis": f"share of hours every plant runs at full load; median coverage {medians['coverage']:.4f}, "
+            f"median served fraction {medians['served_fraction']:.4f}",
+            "data_flags": ";".join(f.key for f in file_flags if f.key.startswith("operation.")),
         },
         {
             "stage": "boa",
@@ -377,7 +523,18 @@ def run(
             "route": ROUTE,
             "process_data": PAPER,
             "usd_per_eur": {"value": USD_PER_EUR, "series": ECB_SERIES, "accessed": ECB_ACCESSED},
-            "load_factor": {"value": lf, "basis": load_factor_basis},
+            "solution_file": solution.path.name,
+            "operation": {
+                "mode": out_attrs["operation"],
+                "basis": load_factor_basis,
+                "median": {k: medians[k] for k in ("load_factor", "coverage", "served_fraction")},
+                "median_lcom_usd_per_t": {
+                    "result": medians["lcom_usd_per_t"],
+                    "full_load": medians["lcom_full_load_usd_per_t"],
+                    "part_load": medians["lcom_part_load_usd_per_t"],
+                },
+            },
+            "median_lcoe_usd_per_mwh": {tech: medians[f"lcoe_{tech}"] for tech in TECHS},
             "wacc": {"basis": wacc_basis, **wacc_summary},
             "data_flags": register.flag_records(flag_results, file_flags),
         },

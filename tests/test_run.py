@@ -8,6 +8,7 @@ from boa.inputs.costs import COST_CACHE_VERSION
 
 from lcom.chain import co2_cost, lcoh, lcom
 from lcom.cli import main
+from lcom.electricity import SolutionFileError
 from lcom.flags import COST_WORKBOOK_FLAGS
 from lcom.paper_inputs import route_b_params
 from lcom.register import REGISTER_COLUMNS
@@ -16,6 +17,10 @@ from lcom.run import COST_WORKBOOK_NAME, LcoeFileError, file_sha256, run
 COST_SET = "default"
 RUN = "wy2025_test_ab12"
 COVERAGE = 0.9
+SERVED = 0.93
+HORIZON = 25
+OPEX = {"solar": 0.01, "wind": 0.02, "battery": 0.02}
+SHARES = {"solar": 0.5, "wind": 0.3, "battery": 0.2}  # LCOE split of every pixel in the solution file
 WACC = {"DEU": 0.055, "IND": 0.073, "CHN": 0.06, "GRL": 0.0877}
 # Index = cost_key_id. Empty key, a province whose key is not in the costs (falls back to CHN), the
 # global average marker, and Greenland.
@@ -44,9 +49,7 @@ def _cost_cache(run_dir, sha: str) -> None:
             "Capex solar": (("iso3", "year"), zeros + 1e6),
             "Capex wind": (("iso3", "year"), zeros + 1e6),
             "Capex battery": (("iso3", "year"), zeros + 1e5),
-            "Opex solar": (("iso3",), np.full(len(keys), 0.01)),
-            "Opex wind": (("iso3",), np.full(len(keys), 0.02)),
-            "Opex battery": (("iso3",), np.full(len(keys), 0.02)),
+            **{f"Opex {tech}": (("iso3",), np.full(len(keys), value)) for tech, value in OPEX.items()},
             "Cost of capital": (("iso3",), np.array([WACC[k] for k in keys])),
         },
         attrs={"cost_cache_version": COST_CACHE_VERSION, "workbook_sha256": sha},
@@ -60,12 +63,54 @@ def _sha(run_dir) -> str:
     return file_sha256(run_dir / COST_WORKBOOK_NAME)
 
 
+# Row 0: no key, DEU, IND, GRL, province. Row 1: DEU (status 0), global average, IND (LCOE NaN), DEU, DEU.
+KEY_ID = np.array([[0, 1, 2, 3, 4], [1, 5, 2, 1, 1]], dtype="int16")
+LCOE_2050 = np.array([[np.nan, 60.0, 90.0, 80.0, 50.0], [np.nan, 70.0, np.nan, 40.0, 0.0]], dtype="float32")
+LAT, LON = [10.0, 10.25], [0.0, 0.25, 0.5, 0.75, 1]
+SOLUTION_NAME = "optimal_sol_wy2025_01MWkm2_cov0p9_GLOBAL_2050.nc"
+
+
+def _solution_file(folder, name: str = SOLUTION_NAME, **attrs):
+    """A BOA solution file for LCOE_2050: coverage COVERAGE, served SERVED and the LCOE split SHARES."""
+    pixel_wacc = np.array([np.nan, WACC["DEU"], WACC["IND"], WACC["GRL"], WACC["CHN"], np.mean(list(WACC.values()))])
+    w = pixel_wacc[KEY_ID]
+    annuity_sum = sum((1.0 + w) ** -t for t in range(1, HORIZON + 1))
+    lcoe = LCOE_2050.astype(float)
+    finite = np.isfinite(lcoe)
+    load = 2.0
+    delivered = load * 8760 * annuity_sum * SERVED
+    install = {
+        tech: np.where(finite, SHARES[tech] * lcoe * delivered / (1 + OPEX[tech] * annuity_sum), np.nan)
+        for tech in SHARES
+    }
+    ds = xr.Dataset(
+        coords={"lat": LAT, "lon": LON},
+        data_vars={
+            "lcoe": (("lat", "lon"), LCOE_2050),
+            "coverage": (("lat", "lon"), np.where(finite, COVERAGE, np.nan)),
+            "served_fraction": (("lat", "lon"), np.where(finite, SERVED, np.nan)),
+            "load_mw": (("lat", "lon"), np.full((2, 5), load)),
+            "cost_of_capital": (("lat", "lon"), w),
+            **{f"installation_cost_{tech}": (("lat", "lon"), value) for tech, value in install.items()},
+        },
+        attrs={
+            "investment_year": 2050,
+            "investment_horizon_years": HORIZON,
+            "coverage_fraction": COVERAGE,
+            "era5_weather_year": 2025,
+            **attrs,
+        },
+    )
+    path = folder / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_netcdf(path)
+    return path
+
+
 def _lcoe_file(run_dir, sha: str, layout_attrs: dict, name: str = LCOE_NAME, drop: tuple[str, ...] = ()):
-    # Row 0: no key, DEU, IND, GRL, province. Row 1: DEU (status 0), global average, IND (LCOE NaN), DEU, DEU.
-    key_id = np.array([[0, 1, 2, 3, 4], [1, 5, 2, 1, 1]], dtype="int16")
+    key_id = KEY_ID
     status = np.array([[0, 1, 1, 1, 1], [3, 1, 1, 1, 1]], dtype="int8")
-    lcoe_2050 = [[np.nan, 60.0, 90.0, 80.0, 50.0], [np.nan, 70.0, np.nan, 40.0, 0.0]]
-    lcoe = np.array([np.full((2, 5), 99.0), lcoe_2050], dtype="float32")
+    lcoe = np.array([np.full((2, 5), 99.0), LCOE_2050], dtype="float32")
     attrs = {
         "coverage_fraction": COVERAGE,
         "era5_weather_year": 2025,
@@ -76,7 +121,7 @@ def _lcoe_file(run_dir, sha: str, layout_attrs: dict, name: str = LCOE_NAME, dro
         **layout_attrs,
     }
     ds = xr.Dataset(
-        coords={"year": np.array([2045, 2050], dtype="int32"), "lat": [10.0, 10.25], "lon": [0.0, 0.25, 0.5, 0.75, 1]},
+        coords={"year": np.array([2045, 2050], dtype="int32"), "lat": LAT, "lon": LON},
         data_vars={
             "lcoe": (("year", "lat", "lon"), lcoe),
             "cost_key_id": (("lat", "lon"), key_id),
@@ -87,6 +132,7 @@ def _lcoe_file(run_dir, sha: str, layout_attrs: dict, name: str = LCOE_NAME, dro
     path = run_dir / name
     path.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(path)
+    _solution_file(run_dir)
     return path
 
 
@@ -113,8 +159,10 @@ def lcoe_path(run_dir):
     return _lcoe_file(run_dir, _sha(run_dir), SCHEMA_1)
 
 
-def _expected_lcom(e: float, w: float, cf: float = COVERAGE) -> float:
+def _expected_lcom(lcoe: float, w: float, cf: float = COVERAGE) -> float:
+    """USD/MWh_MeOH; the plants pay for all the energy delivered (SERVED) and use the share cf."""
     p = route_b_params()
+    e = lcoe * SERVED / cf
     hydrogen = lcoh(e, w, cf, p.electrolysis)
     return lcom(e, w, cf, hydrogen, co2_cost(e, w, cf, p.dac, p.heat_pump), p.methanol).total
 
@@ -127,12 +175,14 @@ def test_run_writes_result_register_and_provenance(lcoe_path, tmp_path):
     result = run(lcoe_path, tmp_path / "out")
 
     assert result.netcdf.name == "lcom_wy2025_01MWkm2_cov0p9_2045_2050_y2050.nc"
-    assert result.netcdf.parent.name == RUN
+    assert result.netcdf.parent.name == "y2050_full-load"
+    assert result.netcdf.parent.parent.name == RUN
     with xr.open_dataset(result.netcdf) as out:
         assert out["lcom_usd_per_t"].dims == ("year", "lat", "lon")
         assert out["year"].values.tolist() == [2050]
         assert out.attrs["lcoe_layout"] == "schema 1"
-        assert out.attrs["load_factor"] == COVERAGE
+        assert out.attrs["operation"] == "full-load"
+        assert out.attrs["solution_file"] == SOLUTION_NAME
         assert out.attrs["cost_key_legend"] == LEGEND
         for key in (
             "capex.china.solar",
@@ -140,12 +190,15 @@ def test_run_writes_result_register_and_provenance(lcoe_path, tmp_path):
             "wacc.country",
             "dac-weather-fixed",
             "heat-integration-not-modelled",
+            "firm-power-design",
+            "operation.full-load-only",
             "lcoe.capacity-ceiling-not-applied",
         ):
             assert key in out.attrs["data_flags"]
     provenance = json.loads(result.provenance.read_text(encoding="utf-8"))
     assert provenance["usd_per_eur"]["value"] == pytest.approx(1.08238046875)
     assert provenance["wacc"]["pixels_priced"] == 6
+    assert provenance["operation"]["median"]["served_fraction"] == pytest.approx(SERVED)
 
 
 def test_each_pixel_uses_its_lcoe_and_wacc(lcoe_path, tmp_path):
@@ -192,14 +245,103 @@ def test_legacy_layout_is_accepted_and_recorded(run_dir, tmp_path):
 
 
 def test_overrides_are_used_recorded_and_named(lcoe_path, tmp_path):
-    result = run(lcoe_path, tmp_path / "out", load_factor=0.95, wacc=0.08)
+    result = run(lcoe_path, tmp_path / "out", load_factor=0.85, wacc=0.08)
 
-    assert result.netcdf.name.endswith("_y2050_lf0p95_wacc0p08.nc")
+    assert result.netcdf.name.endswith("_y2050_lf0p85_wacc0p08.nc")
+    assert result.netcdf.parent.name == "y2050_lf0p85_wacc0p08"
     with xr.open_dataset(result.netcdf) as out:
-        assert out.attrs["load_factor"] == 0.95
+        assert out.attrs["operation"] == "fixed load factor"
+        assert "operation.fixed-load-factor" in out.attrs["data_flags"]
         assert "override" in out.attrs["wacc_basis"]
         assert _at(out, "wacc", 0, 2) == pytest.approx(0.08)
-        assert _at(out, "lcom_usd_per_mwh", 0, 2) == pytest.approx(_expected_lcom(90.0, 0.08, 0.95), rel=1e-6)
+        assert _at(out, "lcom_usd_per_mwh", 0, 2) == pytest.approx(_expected_lcom(90.0, 0.08, 0.85), rel=1e-6)
+
+
+def test_load_factor_above_the_served_fraction_is_refused(lcoe_path, tmp_path):
+    with pytest.raises(ValueError, match="more than the served fraction in 6 pixels"):
+        run(lcoe_path, tmp_path / "out", load_factor=0.95)
+
+
+def test_part_load_uses_the_served_fraction_at_the_lcoe(lcoe_path, tmp_path):
+    full = run(lcoe_path, tmp_path / "out")
+    part = run(lcoe_path, tmp_path / "out", operation="part-load")
+
+    assert part.netcdf.name.endswith("_y2050_partload.nc")
+    assert part.netcdf.parent.name == "y2050_part-load"
+    with xr.open_dataset(part.netcdf) as out:
+        assert out.attrs["operation"] == "part-load"
+        assert "operation.part-load-no-minimum" in out.attrs["data_flags"]
+        assert _at(out, "load_factor", 0, 1) == pytest.approx(SERVED)
+        assert _at(out, "electricity_price", 0, 1) == pytest.approx(60.0)
+        assert _at(out, "lcom_usd_per_mwh", 0, 1) == pytest.approx(_expected_lcom(60.0, 0.055, SERVED), rel=1e-6)
+        part_bounds = (out["lcom_full_load_usd_per_t"].values, out["lcom_part_load_usd_per_t"].values)
+    with xr.open_dataset(full.netcdf) as out:
+        assert _at(out, "electricity_price", 0, 1) == pytest.approx(60.0 * SERVED / COVERAGE, rel=1e-6)
+        np.testing.assert_allclose(out["lcom_part_load_usd_per_t"].values, part_bounds[1], rtol=1e-6)
+        np.testing.assert_allclose(out["lcom_full_load_usd_per_t"].values, part_bounds[0], rtol=1e-6)
+        np.testing.assert_allclose(out["lcom_usd_per_t"].values, part_bounds[0], rtol=1e-6)
+        priced = np.isfinite(part_bounds[0])
+        assert (part_bounds[1][priced] < part_bounds[0][priced]).all()
+
+
+def test_cost_items_add_up_and_electricity_splits_like_the_lcoe(lcoe_path, tmp_path):
+    result = run(lcoe_path, tmp_path / "out")
+
+    with xr.open_dataset(result.netcdf) as out:
+        items = ("electrolyser", "dac", "heat_pump", "synthesis") + tuple(
+            f"electricity_{stage}" for stage in ("electrolysis", "dac", "synthesis")
+        )
+        total = sum(out[f"lcom_item_{item}_usd_per_t"] for item in items)
+        np.testing.assert_allclose(total.values, out["lcom_usd_per_t"].values, rtol=1e-5)
+        electricity = sum(out[f"lcom_item_electricity_{stage}_usd_per_t"] for stage in ("electrolysis", "dac", "synthesis"))
+        for tech, share in SHARES.items():
+            np.testing.assert_allclose(out[f"lcoe_{tech}"].values, share * out["lcoe"].values, rtol=1e-5)
+            np.testing.assert_allclose(
+                out[f"lcom_item_electricity_{tech}_usd_per_t"].values, share * electricity.values, rtol=1e-5
+            )
+
+
+@pytest.mark.parametrize(
+    ("attrs", "match"),
+    [
+        ({"investment_year": 2045}, "investment year 2045"),
+        ({"coverage_fraction": 0.85}, "coverage_fraction"),
+    ],
+)
+def test_solution_file_of_another_run_is_refused(lcoe_path, tmp_path, attrs, match):
+    _solution_file(lcoe_path.parent, **attrs)
+
+    with pytest.raises(SolutionFileError, match=match):
+        run(lcoe_path, tmp_path / "out")
+
+
+def test_solution_file_with_another_lcoe_is_refused(lcoe_path, tmp_path):
+    path = _solution_file(tmp_path / "other")
+    with xr.open_dataset(path) as ds:
+        changed = ds.load().assign(lcoe=ds["lcoe"] * 1.01)
+    changed.to_netcdf(lcoe_path.parent / SOLUTION_NAME)
+
+    with pytest.raises(SolutionFileError, match="not the LCOE of the promoted file"):
+        run(lcoe_path, tmp_path / "out")
+
+
+def test_split_that_does_not_add_up_is_refused(lcoe_path, tmp_path):
+    path = lcoe_path.parent / SOLUTION_NAME
+    with xr.open_dataset(path) as ds:
+        changed = ds.load().assign(installation_cost_wind=ds["installation_cost_wind"] * 1.1)
+    changed.to_netcdf(path)
+
+    with pytest.raises(SolutionFileError, match="do not add up to the LCOE"):
+        run(lcoe_path, tmp_path / "out")
+
+
+def test_missing_solution_file_is_refused(lcoe_path, tmp_path):
+    (lcoe_path.parent / SOLUTION_NAME).unlink()
+
+    with pytest.raises(SolutionFileError, match="No BOA solution file"):
+        run(lcoe_path, tmp_path / "out")
+    other = _solution_file(tmp_path / "elsewhere", name="optimal_sol_x_GLOBAL_2050.nc")
+    assert run(lcoe_path, tmp_path / "out", solution_path=other).netcdf.exists()
 
 
 def test_lcoe_with_the_capacity_ceiling_carries_no_ceiling_flag(run_dir, tmp_path):

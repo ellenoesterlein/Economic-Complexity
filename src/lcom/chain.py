@@ -84,6 +84,10 @@ class Co2Cost:
     electricity: Array  # DAC electricity plus the electricity of the heat pump
     capital: Array  # DAC annuity plus heat-pump annuity
     fom: Array  # DAC and heat-pump fixed O&M
+    capital_dac: Array
+    capital_heat_pump: Array
+    fom_dac: Array
+    fom_heat_pump: Array
 
 
 @dataclass(frozen=True)
@@ -128,11 +132,22 @@ def co2_cost(lcoe: Array, wacc: Array, load_factor: Array, dac: DacParams, heat_
     # Heat-pump capacity (kW_th) per tCO2/a actually captured. Heat is per captured tonne, and the heat
     # pump runs HOURS_IN_YEAR * CF hours, so productivity does not enter its size.
     heat_pump_kw = dac.heat_demand / (HOURS_IN_YEAR * load_factor)
-    capital = (dac.capex * crf(wacc, dac.lifetime)) / captured + (
-        heat_pump.capex * crf(wacc, heat_pump.lifetime) * heat_pump_kw
+    capital_dac = dac.capex * crf(wacc, dac.lifetime) / captured
+    capital_heat_pump = heat_pump.capex * crf(wacc, heat_pump.lifetime) * heat_pump_kw
+    fom_dac = dac.fom / captured
+    fom_heat_pump = heat_pump.fom * heat_pump_kw
+    capital = capital_dac + capital_heat_pump
+    fom = fom_dac + fom_heat_pump
+    return Co2Cost(
+        total=electricity + capital + fom,
+        electricity=electricity,
+        capital=capital,
+        fom=fom,
+        capital_dac=capital_dac,
+        capital_heat_pump=capital_heat_pump,
+        fom_dac=fom_dac,
+        fom_heat_pump=fom_heat_pump,
     )
-    fom = dac.fom / captured + heat_pump.fom * heat_pump_kw
-    return Co2Cost(total=electricity + capital + fom, electricity=electricity, capital=capital, fom=fom)
 
 
 def lcom(lcoe: Array, wacc: Array, load_factor: Array, hydrogen: Lcoh, co2: Co2Cost, p: MethanolParams) -> Lcom:
@@ -152,3 +167,31 @@ def lcom(lcoe: Array, wacc: Array, load_factor: Array, hydrogen: Lcoh, co2: Co2C
         capital=capital,
         fom=fom,
     )
+
+
+# Cost items of the LCOM, in the order of the supply chain. Plant items are capital charge plus fixed O&M.
+COST_ITEMS = (
+    "electrolyser",
+    "dac",
+    "heat_pump",
+    "synthesis",
+    "electricity_electrolysis",
+    "electricity_dac",
+    "electricity_synthesis",
+)
+
+
+def cost_items(hydrogen: Lcoh, co2: Co2Cost, methanol: Lcom, p: MethanolParams) -> dict[str, Array]:
+    """
+    The LCOM split by plant and by the stage that uses the electricity, in USD/MWh_MeOH; the items add up
+    to ``methanol.total``. ``electricity_dac`` includes the electricity of the heat pump.
+    """
+    return {
+        "electrolyser": (hydrogen.capital + hydrogen.fom) / p.efficiency,
+        "dac": (co2.capital_dac + co2.fom_dac) * p.co2_demand,
+        "heat_pump": (co2.capital_heat_pump + co2.fom_heat_pump) * p.co2_demand,
+        "synthesis": methanol.capital + methanol.fom,
+        "electricity_electrolysis": hydrogen.electricity / p.efficiency,
+        "electricity_dac": co2.electricity * p.co2_demand,
+        "electricity_synthesis": methanol.electricity,
+    }

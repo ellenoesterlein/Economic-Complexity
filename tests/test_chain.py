@@ -9,6 +9,7 @@ from lcom.chain import (
     HeatPumpParams,
     MethanolParams,
     co2_cost,
+    cost_items,
     lcoh,
     lcom,
 )
@@ -209,3 +210,22 @@ def test_route_b_per_tonne_in_paper_units():
 
     assert co2.total == pytest.approx(co2_per_t, rel=1e-12)
     assert result.usd_per_tonne() == pytest.approx(expected, rel=1e-12)
+
+
+def test_cost_items_split_the_lcom_by_plant_and_by_stage():
+    hydrogen = lcoh(PARITY_E, PARITY_W, PARITY_CF, ELECTROLYSER)
+    co2 = co2_cost(PARITY_E, PARITY_W, PARITY_CF, DAC, HEAT_PUMP)
+    methanol = lcom(PARITY_E, PARITY_W, PARITY_CF, hydrogen, co2, METHANOL)
+
+    items = cost_items(hydrogen, co2, methanol, METHANOL)
+
+    np.testing.assert_allclose(sum(items.values()), methanol.total)
+    np.testing.assert_allclose(co2.capital_dac + co2.capital_heat_pump, co2.capital)
+    np.testing.assert_allclose(co2.fom_dac + co2.fom_heat_pump, co2.fom)
+    np.testing.assert_allclose(items["electricity_electrolysis"], PARITY_E / 0.7 / 0.8)
+    np.testing.assert_allclose(items["electricity_synthesis"], methanol.electricity)
+    # Heat pump: 2000 kWh_th/tCO2 over 8760 * CF hours, 0.25 kgCO2/kWh_MeOH.
+    heat_pump_kw = 2000.0 / (8760 * PARITY_CF)
+    np.testing.assert_allclose(
+        items["heat_pump"], (1000.0 * crf(PARITY_W, 25) + 20.0) * heat_pump_kw * 0.25
+    )

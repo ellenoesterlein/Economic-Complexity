@@ -23,7 +23,7 @@ All input data goes in `data/`. Git ignores it, except the BACI notes and lookup
 ```
 data/
   baci/                BACI trade files (download, see data/baci/README.md); lookup tables (tracked)
-  boa/<run>/           one BOA run: the LCOE file and its cost workbook
+  boa/<run>/           one BOA run: the LCOE file, its cost workbook and the 2050 solution file
 outputs/               results of both parts (git-ignored)
 ```
 
@@ -65,12 +65,13 @@ All process values are the paper's 2050 values, so the chain prices the LCOE yea
 
 ### Run
 
-Put the two files of one BOA run in `data/boa/<run>/`:
+Put the three files of one BOA run in `data/boa/<run>/`:
 
 | File | From the BOA data root |
 |---|---|
 | `optimal_lcoe_*.nc` | `lcoe-only/<run>/` |
 | `boa_cost_data.xlsx` | `costs/<cost_set>/`, with `<cost_set>` the `cost_set` attribute of the LCOE file |
+| `optimal_sol_*_GLOBAL_2050.nc` | `runs/<run>/outputs/<weather>/<density>/<coverage>/nc/GLOBAL/` |
 
 ```
 uv sync --extra lcom
@@ -81,13 +82,21 @@ python -m lcom.cli data/boa/<run>/optimal_lcoe_wy2025_01MWkm2_cov0p9_2025_2060.n
 |---|---|
 | `--out-dir DIR` | Output folder (default `outputs/`); results go to `DIR/<run>/` |
 | `--cost-workbook PATH` | The cost workbook, if it is not next to the LCOE file |
-| `--load-factor X` | Plant load factor in (0, 1]; default: the LCOE run's `coverage_fraction` |
+| `--solution-file PATH` | The 2050 solution file, if it is not next to the LCOE file |
+| `--operation full-load\|part-load` | Plant operation (default `full-load`, see Method) |
+| `--load-factor X` | A fixed plant load factor in (0, 1] in place of `--operation`; at most the served fraction |
 | `--wacc X` | One cost of capital for every pixel, in place of the regional WACC |
 
-For each LCOE file the run writes `lcom_<scenario>_y2050[_lf…][_wacc…].nc` (all cost layers in USD, the WACC and the
-LCOE), `…_assumptions_register.csv` (one row per input with value, unit and source) and `…_provenance.json`.
-It accepts LCOE files of BOA 1.8.0 and of BOA 1.9 or later (`schema_version` 1), and refuses a workbook that
-differs from the one that priced the LCOE. BOA's cost cache goes to `cache_costs/` next to the workbook.
+For each LCOE file the run writes `lcom_<scenario>_y2050[_partload][_lf…][_wacc…].nc` (all cost layers in USD,
+the WACC, the LCOE and its split), `…_assumptions_register.csv` (one row per input with value, unit and source)
+and `…_provenance.json`. It accepts LCOE files of BOA 1.8.0 and of BOA 1.9 or later (`schema_version` 1). It
+refuses a workbook that differs from the one that priced the LCOE, and a solution file with another LCOE or run
+attributes. BOA's cost cache goes to `cache_costs/` next to the workbook.
+
+Cost items of the result, in USD per tonne of methanol (`lcom_item_<item>_usd_per_t`): `electrolyser`, `dac`,
+`heat_pump` and `synthesis` (capital charge and fixed O&M), and `electricity_electrolysis`, `electricity_dac`
+(with the heat pump) and `electricity_synthesis`. These seven add up to `lcom_usd_per_t`. `electricity_solar`,
+`electricity_wind` and `electricity_battery` split the same electricity cost again, in the shares of the LCOE.
 
 ### Plots
 
@@ -132,7 +141,14 @@ LCOM = LCOH / eta_syn + e * elec_syn + co2_syn * CO2                            
 - **Pixels:** only pixels with `status == 1`, a positive finite LCOE and a cost key.
 - **WACC:** the `Renewables` cost of capital of the pixel's cost key in the LCOE run's cost workbook, for every
   stage. Province keys fall back to the country and unknown keys to the global average, as in BOA.
-- **Load factor:** every plant runs `8760 * CF` hours on the firm BOA power.
+- **Operation:** BOA meets the whole load in the `coverage` share of the hours and delivers the `served` share
+  of the energy. With `full-load` (default), every plant runs at full load only in the fully met hours and pays
+  for all the energy delivered: `CF = coverage`, `e = LCOE * served / coverage`. With `part-load`, the plants
+  also use the partly met hours, with no minimum load: `CF = served`, `e = LCOE`. The result holds both
+  (`lcom_full_load_usd_per_t`, `lcom_part_load_usd_per_t`).
+- **LCOE split:** `LCOE_tech = inst_tech * (1 + opex_tech * S) / (load * 8760 * S * served)`, with the year-0
+  installation cost of the solution file, the fixed O&M share of the cost workbook and `S` the annuity sum over
+  the 25-year horizon. The three parts add up to the LCOE; the run stops if they do not.
 - **DAC:** CAPEX is per (tCO2/a) of nameplate capacity, so the plant terms divide by the tonnes captured, `CF * p`.
   All DAC heat comes from an air-source heat pump.
 - **Units:** lower heating values 33.33 kWh/kg (hydrogen) and 5.528 kWh/kg (methanol).
@@ -174,7 +190,9 @@ the paper's scaling to future energy demand.
   heat pump COP.
 - Water supply, storage, compression, transport, taxes, stack replacement, degradation, minimum load, regional
   differences in process CAPEX.
-- The flexible, off-grid operation of the paper: every plant runs at constant load on firm BOA power.
+- The flexible, off-grid operation of the paper (a larger electrolyser with a hydrogen buffer): every plant runs
+  at constant load on firm BOA power. With the same costs a flexible design cannot cost more, so the LCOM is an
+  upper bound.
 - The BOA capacity ceiling, when the LCOE file does not apply it: results are then unconstrained optima.
 - LCOE years other than 2050.
 

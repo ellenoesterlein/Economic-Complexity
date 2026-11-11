@@ -14,6 +14,7 @@ from lcom.flags import (
     check_cost_workbook_flags,
     lcoe_file_flags,
     log_flags,
+    operation_flags,
 )
 
 
@@ -115,3 +116,15 @@ def test_workbook_without_the_year_column_raises(tmp_path):
 
     with pytest.raises(ValueError, match="no 2024 column"):
         check_cost_workbook_flags(path)
+
+
+@pytest.mark.parametrize(
+    ("operation", "fixed", "key"),
+    [
+        ("full-load", False, "operation.full-load-only"),
+        ("part-load", False, "operation.part-load-no-minimum"),
+        ("full-load", True, "operation.fixed-load-factor"),
+    ],
+)
+def test_operation_sets_one_flag(operation, fixed, key):
+    assert [f.key for f in operation_flags(operation, fixed)] == [key]

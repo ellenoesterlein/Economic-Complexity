@@ -219,7 +219,37 @@ CHAIN_FLAGS: tuple[DataFlag, ...] = (
         "2.9 MWh/t_MeOH at 40 C) and purge gas heat (0.49 MWh/t_MeOH) are not used. Estimated effect: about "
         "0.5 MWh_el/t_MeOH, 3 to 4 % of LCOM, which this chain overstates.",
     ),
+    DataFlag(
+        "firm-power-design",
+        STATUS_SIMPLIFIED,
+        "BOA sizes solar, wind and battery for firm power, and the electrolyser, DAC and synthesis plant run on it "
+        "at constant load. A flexible design (a larger electrolyser with a hydrogen buffer in place of part of the "
+        "battery) is not modelled. With the same costs a flexible design cannot cost more, so the LCOM is an upper "
+        "bound. lcoe_battery shows the part of the LCOE that a hydrogen buffer could replace.",
+    ),
 )
+
+# Flags set by the operation of the plants; see ``operation_flags``.
+OPERATION_FULL_LOAD = DataFlag(
+    "operation.full-load-only",
+    STATUS_SIMPLIFIED,
+    "The plants run at full load only in the hours where BOA meets the whole load (coverage). The energy that BOA "
+    "delivers in the partly met hours is paid for but not used, so the price is LCOE * served / coverage. "
+    "lcom_part_load_usd_per_t is the bound with part-load operation in those hours.",
+)
+OPERATION_PART_LOAD = DataFlag(
+    "operation.part-load-no-minimum",
+    STATUS_SIMPLIFIED,
+    "The plants also run at part load in the partly met hours, with no minimum load (methanol synthesis: about "
+    "20 %) and no loss of efficiency at part load. lcom_full_load_usd_per_t is the bound with full-load operation.",
+)
+OPERATION_FIXED = DataFlag(
+    "operation.fixed-load-factor",
+    STATUS_SIMPLIFIED,
+    "The plants run at full load for a fixed share of the hours (command-line load factor) and pay for all the "
+    "energy that BOA delivers, so the price is LCOE * served / load factor.",
+)
+OPERATION_FLAGS: tuple[DataFlag, ...] = (OPERATION_FULL_LOAD, OPERATION_PART_LOAD, OPERATION_FIXED)
 
 # Flags set by the attributes of the LCOE file; see ``lcoe_file_flags``.
 LCOE_CEILING_NOT_APPLIED = DataFlag(
@@ -231,7 +261,14 @@ LCOE_CEILING_NOT_APPLIED = DataFlag(
 )
 LCOE_FILE_FLAGS: tuple[DataFlag, ...] = (LCOE_CEILING_NOT_APPLIED,)
 
-ALL_FLAGS = COST_WORKBOOK_FLAGS + STANDING_FLAGS + CHAIN_FLAGS + LCOE_FILE_FLAGS
+ALL_FLAGS = COST_WORKBOOK_FLAGS + STANDING_FLAGS + CHAIN_FLAGS + LCOE_FILE_FLAGS + OPERATION_FLAGS
+
+
+def operation_flags(operation: str, fixed_load_factor: bool) -> tuple[DataFlag, ...]:
+    """The flag of the plant operation: ``full-load``, ``part-load`` or a fixed load factor."""
+    if fixed_load_factor:
+        return (OPERATION_FIXED,)
+    return (OPERATION_FULL_LOAD,) if operation == "full-load" else (OPERATION_PART_LOAD,)
 
 
 def lcoe_file_flags(attrs: dict) -> tuple[DataFlag, ...]:

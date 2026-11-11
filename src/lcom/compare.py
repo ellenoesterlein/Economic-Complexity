@@ -150,8 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         comparison = compare(paper, result_lcom_by_pixel(result))
         tables = result.parent / "tables"
         tables.mkdir(parents=True, exist_ok=True)
-        comparison.countries.to_csv(tables / "compare_countries.csv")
-        comparison.fig8c.to_csv(tables / "compare_fig8c.csv")
+        comparison.countries.to_csv(tables / "paper_comparison_countries.csv")
+        comparison.fig8c.to_csv(tables / "paper_comparison_fig8c.csv")
         print(f"== {result.name}")
         for key, value in comparison.summary.items():
             print(f"  {key}: {value:.3f}")

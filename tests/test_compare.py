@@ -79,6 +79,6 @@ def test_cli_writes_both_tables(tmp_path, capsys):
     result = _result_nc(tmp_path / "r.nc")
 
     assert main([str(result), "--paper-results", str(_paper_csv(tmp_path / "paper.csv"))]) == 0
-    assert (tmp_path / "tables" / "compare_countries.csv").exists()
-    assert (tmp_path / "tables" / "compare_fig8c.csv").exists()
+    assert (tmp_path / "tables" / "paper_comparison_countries.csv").exists()
+    assert (tmp_path / "tables" / "paper_comparison_fig8c.csv").exists()
     assert "spearman_country_medians" in capsys.readouterr().out

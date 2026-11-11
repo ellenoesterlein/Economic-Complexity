@@ -113,25 +113,29 @@ projection (cartopy).
 
 | File | Content |
 |---|---|
-| `figures/map_lcom.png` | LCOM per pixel in 8 classes, blue (cheaper than the median) to red; class limits at percentiles 5, 15, 30, 50, 70, 85 and 95 |
+| `figures/map_lcom_classes.png` | LCOM per pixel in 8 classes, blue (cheaper than the median) to red; class limits at percentiles 5, 15, 30, 50, 70, 85 and 95 |
 | `figures/map_lcom_continuous.png` | LCOM per pixel on the continuous batlow scale (Crameri's Scientific Colour Maps), percentiles 5 to 95 |
 | `figures/map_electricity_share.png` | Share of the LCOM that is electricity (electrolysis, DAC, heat pump, synthesis) |
-| `figures/distribution.png` | Histogram of the LCOM over the priced pixels, with median and P10 |
-| `figures/countries.png` | Median and P10 to P90 per country, for the 30 countries with the most priced pixels |
-| `figures/breakdown_top5.png`, `tables/breakdown_top5.csv` | Mean cost items of the cheapest 5 % of each country's pixels (electricity from solar, wind and battery; electrolyser, DAC, heat pump, synthesis), with P10 to P90 of each electricity part. The plot shows the 10 cheapest countries, the countries of interest and the 5 most expensive (cheapest and most expensive only of countries with 20 or more priced pixels); the CSV has every country |
+| `figures/histogram_lcom_pixels.png` | Histogram of the LCOM over the priced pixels, with median and P10 |
+| `figures/countries_lcom_median_p10_p90.png` | Median and P10 to P90 over all priced pixels of each country |
+| `figures/countries_cost_items_cheapest5pct.png`, `tables/countries_cost_items_cheapest5pct.csv` | Mean cost items of the cheapest 5 % of each country's pixels (electricity from solar, wind and battery; electrolyser, DAC, heat pump, synthesis), with P10 to P90 of each electricity part; the CSV has every country |
+
+The two country plots show the same groups: the 10 cheapest countries, the countries of interest and the 5 most
+expensive, ranked by the mean LCOM of the cheapest 5 % of each country's pixels. The cheapest and most expensive
+are only from countries with 20 or more priced pixels.
 
 | Option | Effect |
 |---|---|
 | `--currency EUR\|USD` | Cost unit (default EUR, at the chain's 1.08238 USD/EUR) |
 | `--breaks V1 V2 …` | Class limits of the classed LCOM map; give the same limits to compare runs |
-| `--countries ISO3,…` | Countries of the country plot, in place of the 30 largest |
-| `--top N` | Number of countries in the country plot (default 30) |
-| `--share X` | Share of each country's cheapest pixels in the breakdown (default 0.05) |
-| `--cheapest N`, `--expensive N` | Cheapest and most expensive countries in the breakdown plot (default 10 and 5) |
-| `--interest ISO3,…` | Countries of interest in the breakdown plot (default TTO, CHN, IRN, SAU, OMN, USA, RUS, CHL, DEU, JPN) |
+| `--countries ISO3,…` | Countries of the country plots, in place of the three groups |
+| `--share X` | Share of each country's cheapest pixels in the cost items and the ranking (default 0.05) |
+| `--cheapest N`, `--expensive N` | Cheapest and most expensive countries in the country plots (default 10 and 5) |
+| `--interest ISO3,…` | Countries of interest in the country plots (default TTO, CHN, IRN, SAU, OMN, USA, RUS, CHL, DEU, JPN) |
 | `--out-dir DIR` | Output folder; files go to `DIR/<result stem>/figures/` and `tables/`. Default: next to each result |
 
-`lcom.compare` writes `tables/compare_countries.csv` and `tables/compare_fig8c.csv` next to each result.
+`lcom.compare` writes `tables/paper_comparison_countries.csv` and `tables/paper_comparison_fig8c.csv` next to
+each result.
 
 Country borders are the edges between the cost keys of the result file, so the maps need no shapefile. Grey land
 has a cost key but no result.

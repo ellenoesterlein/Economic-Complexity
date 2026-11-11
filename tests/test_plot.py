@@ -3,14 +3,36 @@ import pytest
 import xarray as xr
 
 from lcom.paper_inputs import USD_PER_EUR
-from lcom.plot import border_segments, class_breaks, country_stats, electricity_share, load, main
+from lcom.plot import (
+    BREAKDOWN_ITEMS,
+    border_segments,
+    breakdown_stats,
+    class_breaks,
+    country_stats,
+    electricity_share,
+    load,
+    load_items,
+    main,
+)
 
 # 6 x 8 grid: ocean in the first column, DEU in the west, a CHN province and CHN in the east, one DEU pixel
 # without a result.
 LEGEND = ",DEU,CHN:CN-GS,CHN"
 
 
-def _result(path, seed: int = 0):
+# Item shares of the LCOM per tonne in the test result; they add up to 1 without the electricity parts' sum.
+ITEM_SHARES = {
+    "electricity_solar": 0.4,
+    "electricity_wind": 0.2,
+    "electricity_battery": 0.15,
+    "electrolyser": 0.1,
+    "dac": 0.08,
+    "heat_pump": 0.03,
+    "synthesis": 0.04,
+}
+
+
+def _result(path, seed: int = 0, items: bool = True):
     rng = np.random.default_rng(seed)
     key_id = np.zeros((6, 8), dtype="int16")
     key_id[:, 1:4] = 1
@@ -31,6 +53,8 @@ def _result(path, seed: int = 0):
         "co2_cost_usd_per_t": np.full((6, 8), 200.0),
         "co2_electricity_usd_per_t": np.full((6, 8), 100.0),
     }
+    if items:
+        layers.update({f"lcom_item_{item}_usd_per_t": lcom_mwh * 5.528 * share for item, share in ITEM_SHARES.items()})
     ds = xr.Dataset(
         coords={"year": [2050], "lat": np.arange(6) * 0.25 + 10, "lon": np.arange(8) * 0.25},
         data_vars={
@@ -92,13 +116,42 @@ def test_class_breaks_are_rounded_deciles():
     assert np.all(np.diff(breaks) > 0)
 
 
-def test_cli_writes_four_plots_and_refuses_bad_breaks(tmp_path, capsys):
+def test_breakdown_takes_the_cheapest_share_of_each_country(tmp_path):
+    items = load_items(_result(tmp_path / "lcom.nc"), "USD")
+
+    stats = breakdown_stats(items, ["DEU", "CHN"], share=0.2)
+
+    # DEU: 17 priced pixels -> the 4 cheapest (ceil of 3.4); CHN: 24 -> 5.
+    assert stats.loc["DEU", "n"] == 4 and stats.loc["CHN", "n"] == 5
+    deu = items[items["iso3"] == "DEU"].nsmallest(4, "lcom")
+    assert stats.loc["DEU", "lcom_mean"] == pytest.approx(deu["lcom"].mean())
+    assert sum(stats.loc["DEU", f"{item}_mean"] for item, _ in BREAKDOWN_ITEMS) == pytest.approx(
+        deu["lcom"].mean(), rel=1e-5
+    )
+    assert (stats["electricity_solar_p10"] <= stats["electricity_solar_p90"]).all()
+    assert list(stats.index) == sorted(["DEU", "CHN"], key=lambda c: stats.loc[c, "lcom_mean"])
+    with pytest.raises(ValueError, match="No priced pixels for FRA"):
+        breakdown_stats(items, ["FRA"])
+
+
+def test_result_without_items_has_no_breakdown(tmp_path):
+    with pytest.raises(ValueError, match="no cost items"):
+        load_items(_result(tmp_path / "lcom.nc", items=False))
+
+
+def test_cli_writes_the_plots_and_refuses_bad_breaks(tmp_path, capsys):
     path = _result(tmp_path / "lcom_test.nc")
     out = tmp_path / "plots"
 
     assert main([str(path), "--out-dir", str(out), "--top", "2"]) == 0
     names = sorted(p.name for p in out.iterdir())
-    assert names == [f"lcom_test_{kind}.png" for kind in
-                     ("countries", "distribution", "map_electricity_share", "map_lcom")]
+    assert names == sorted(
+        [f"lcom_test_{kind}.png" for kind in ("countries", "distribution", "map_electricity_share", "map_lcom")]
+        + ["lcom_test_breakdown_top5.png", "lcom_test_breakdown_top5.csv"]
+    )
+    without = _result(tmp_path / "lcom_old.nc", items=False)
+    assert main([str(without), "--out-dir", str(out), "--top", "2"]) == 0
+    assert "no breakdown plot" in capsys.readouterr().err
+    assert not (out / "lcom_old_breakdown_top5.png").exists()
     assert main([str(path), "--out-dir", str(out), "--breaks", "900", "800"]) == 1
     assert "breaks must be" in capsys.readouterr().err

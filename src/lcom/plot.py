@@ -10,6 +10,11 @@ For each result file (``lcom_*.nc``) it writes four PNG files next to it (or to 
 - ``<stem>_distribution.png``: histogram of the LCOM over the priced pixels, with the median and the P10.
 - ``<stem>_countries.png``: median and P10 to P90 per country, for the countries with the most priced pixels
   or for ``--countries``.
+- ``<stem>_breakdown_top5.png`` and ``.csv``: for the same countries, the LCOM of the cheapest 5 % of each
+  country's pixels (``--share``), split into cost items: the electricity of all stages from solar, wind and
+  battery, and the electrolyser, DAC, heat pump and synthesis plant. Each bar is the mean over these pixels, so
+  the items add up to the mean LCOM. Whiskers show P10 to P90 of each electricity part. Only for result files
+  with cost items (``lcom_item_*``).
 
 Borders are the edges between the cost keys of the result file (country level, 0.25 degree steps), so no
 shapefile is necessary. Grey land has a cost key but no result.
@@ -51,6 +56,20 @@ AXIS = "#c3c2b7"
 BORDER = "#7d7c77"
 FONTS = ["Segoe UI", "Helvetica Neue", "Arial", "DejaVu Sans"]
 DPI = 200
+# Categorical slots 1 to 7 of the reference palette, in their fixed order: the stack order of the breakdown.
+CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"]
+# (result variable item, label); the three electricity parts first, then the plants along the chain.
+BREAKDOWN_ITEMS = (
+    ("electricity_solar", "Electricity: solar"),
+    ("electricity_wind", "Electricity: wind"),
+    ("electricity_battery", "Electricity: battery"),
+    ("electrolyser", "Electrolyser"),
+    ("dac", "DAC plant"),
+    ("heat_pump", "Heat pump"),
+    ("synthesis", "Synthesis plant"),
+)
+ELECTRICITY_ITEMS = ("electricity_solar", "electricity_wind", "electricity_battery")
+TOP_SHARE = 0.05
 
 
 @dataclass(frozen=True)
@@ -103,6 +122,48 @@ def load(path: Path, currency: str = "EUR") -> Result:
             run=str(ds.attrs.get("run", "")),
             priced_year=int(ds["year"].values[0]),
         )
+
+
+def load_items(path: Path, currency: str = "EUR") -> pd.DataFrame:
+    """
+    One row per priced pixel: ``iso3``, ``lcom`` and one column per breakdown item, per tonne in ``currency``.
+    Raises ValueError for a result file without cost items.
+    """
+    rate = 1 / USD_PER_EUR if currency == "EUR" else 1.0
+    with xr.open_dataset(path) as ds:
+        names = [f"lcom_item_{item}_usd_per_t" for item, _ in BREAKDOWN_ITEMS]
+        missing = [name for name in names if name not in ds.variables]
+        if missing:
+            raise ValueError(f"{path.name} has no cost items ({missing[0]}); price it again with lcom.cli.")
+        legend = np.array([key.split(":")[0] for key in str(ds.attrs["cost_key_legend"]).split(",")])
+        iso3 = legend[ds["cost_key_id"].values]
+        layers = {"lcom": ds["lcom_usd_per_t"].isel(year=0).values.astype(float) * rate}
+        for (item, _), name in zip(BREAKDOWN_ITEMS, names, strict=True):
+            layers[item] = ds[name].isel(year=0).values.astype(float) * rate
+    priced = np.isfinite(layers["lcom"]) & (iso3 != "") & (iso3 != "UNKNOWN")
+    return pd.DataFrame({"iso3": iso3[priced], **{name: layer[priced] for name, layer in layers.items()}})
+
+
+def breakdown_stats(items: pd.DataFrame, countries: list[str], share: float = TOP_SHARE) -> pd.DataFrame:
+    """
+    Per country, over the cheapest ``share`` of its pixels (at least one): pixel count, mean LCOM and the mean,
+    P10 and P90 of every item. Sorted by mean LCOM.
+    """
+    if not 0 < share <= 1:
+        raise ValueError(f"share must be in (0, 1], got {share}.")
+    rows = []
+    for iso3 in countries:
+        pixels = items[items["iso3"] == iso3]
+        if pixels.empty:
+            raise ValueError(f"No priced pixels for {iso3}.")
+        top = pixels.nsmallest(int(np.ceil(share * len(pixels))), "lcom")
+        row = {"iso3": iso3, "pixels": len(pixels), "n": len(top), "lcom_mean": top["lcom"].mean()}
+        for item, _ in BREAKDOWN_ITEMS:
+            row[f"{item}_mean"] = top[item].mean()
+            row[f"{item}_p10"] = top[item].quantile(0.1)
+            row[f"{item}_p90"] = top[item].quantile(0.9)
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("iso3").sort_values("lcom_mean")
 
 
 def border_segments(iso3: np.ndarray, lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
@@ -252,6 +313,52 @@ def plot_countries(result: Result, stats: pd.DataFrame, subtitle: str, path: Pat
     fig.savefig(path, dpi=DPI, facecolor=SURFACE)
 
 
+def plot_breakdown(stats: pd.DataFrame, currency: str, subtitle: str, path: Path) -> None:
+    """Stacked bars of the item means; whiskers at the end of each electricity segment show its P10 to P90."""
+    fig = _figure(9.0, 1.9 + 0.3 * len(stats))
+    ax = fig.add_subplot()
+    _style(ax)
+    y = np.arange(len(stats))
+    left = np.zeros(len(stats))
+    # The three whiskers sit at different heights inside the bar, so that they do not overlap.
+    whisker_offset = dict(zip(ELECTRICITY_ITEMS, (-0.2, 0.0, 0.2), strict=True))
+    for (item, label), color in zip(BREAKDOWN_ITEMS, CATEGORICAL, strict=True):
+        mean = stats[f"{item}_mean"].to_numpy()
+        ax.barh(y, mean, left=left, height=0.66, color=color, edgecolor=SURFACE, linewidth=1.0, label=label)
+        if item in whisker_offset:
+            end = left + mean
+            low = end - (mean - stats[f"{item}_p10"].to_numpy())
+            high = end + (stats[f"{item}_p90"].to_numpy() - mean)
+            yy = y + whisker_offset[item]
+            ax.hlines(yy, low, high, color=INK, linewidth=0.9, zorder=3)
+            ax.vlines(low, yy - 0.06, yy + 0.06, color=INK, linewidth=0.9, zorder=3)
+            ax.vlines(high, yy - 0.06, yy + 0.06, color=INK, linewidth=0.9, zorder=3)
+        left = left + mean
+    for yi, total in zip(y, stats["lcom_mean"], strict=True):
+        ax.text(total, yi, f"  {total:,.0f}", va="center", ha="left", fontsize=7.5, color=INK_SECONDARY)
+    ax.set_yticks(y, [f"{iso3}  ({n:,})" for iso3, n in zip(stats.index, stats["n"], strict=True)])
+    ax.set_ylim(-0.7, len(stats) - 0.3)
+    ax.invert_yaxis()
+    ax.set_xlim(0, float(left.max()) * 1.1)
+    ax.grid(axis="x", color=GRID, linewidth=0.6)
+    ax.set_axisbelow(True)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+    ax.xaxis.set_major_formatter(lambda v, _: f"{v:,.0f}")
+    ax.set_xlabel(f"Mean LCOM of the cheapest pixels, {currency}/t", color=INK_SECONDARY, fontsize=9)
+    legend = fig.legend(loc="outside lower center", ncol=4, frameon=False, fontsize=8, handlelength=1.2,
+                        handleheight=1.0, columnspacing=1.4)
+    for text in legend.get_texts():
+        text.set_color(INK_SECONDARY)
+    _titles(ax, "LCOM cost items of the cheapest pixels per country", subtitle)
+    fig.savefig(path, dpi=DPI, facecolor=SURFACE)
+
+
+def write_breakdown(stats: pd.DataFrame, currency: str, path: Path) -> None:
+    unit = currency.lower()
+    stats.rename(columns=lambda c: c if c in ("pixels", "n") else f"{c}_{unit}_per_t").round(1).to_csv(path)
+
+
 def plot_all(
     path: Path,
     out_dir: Path | None = None,
@@ -259,8 +366,9 @@ def plot_all(
     breaks: list[float] | None = None,
     countries: list[str] | None = None,
     top: int = 30,
+    share: float = TOP_SHARE,
 ) -> list[Path]:
-    """Write the four plots of one result file; returns their paths."""
+    """Write the plots of one result file (and the breakdown table, if it has cost items); returns their paths."""
     result = load(path, currency)
     if not np.isfinite(result.lcom).any():
         raise ValueError(f"{path.name} has no priced pixels.")
@@ -270,16 +378,32 @@ def plot_all(
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = [out_dir / f"{result.name}_{kind}.png" for kind in ("map_lcom", "map_electricity_share",
                                                                  "distribution", "countries")]
-    share = result.electricity_share * 100
+    electricity_pct = result.electricity_share * 100
     stats = country_stats(result, countries, top)
     chosen = "selected countries" if countries else f"the {len(stats)} countries with the most priced pixels"
     with rc_context({"font.family": _font()}):
         plot_map(result, result.lcom, "Levelised cost of methanol (Route B)", f"LCOM, {currency}/t",
                  np.asarray(breaks, dtype=float) if breaks else class_breaks(result.lcom), paths[0])
-        plot_map(result, share, "Electricity share of the LCOM", "Share of the LCOM that is electricity, %",
-                 class_breaks(share), paths[1])
+        plot_map(result, electricity_pct, "Electricity share of the LCOM", "Share of the LCOM that is electricity, %",
+                 class_breaks(electricity_pct), paths[1])
         plot_distribution(result, paths[2])
         plot_countries(result, stats, f"{result.run} · {chosen} · priced pixels in brackets", paths[3])
+        try:
+            items = load_items(path, currency)
+        except ValueError as e:
+            print(f"warning: no breakdown plot: {e}", file=sys.stderr)
+            return paths
+        breakdown = breakdown_stats(items, list(stats.index), share)
+        stem = f"{result.name}_breakdown_top{share * 100:g}"
+        plot_breakdown(
+            breakdown,
+            currency,
+            f"{result.run} · cheapest {share:.0%} of each country's pixels (number in brackets) · bars: means · "
+            "whiskers: P10 to P90 of each electricity part",
+            out_dir / f"{stem}.png",
+        )
+        write_breakdown(breakdown, currency, out_dir / f"{stem}.csv")
+        paths += [out_dir / f"{stem}.png", out_dir / f"{stem}.csv"]
     return paths
 
 
@@ -297,10 +421,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--countries", type=lambda s: [c.strip().upper() for c in s.split(",") if c.strip()],
                         default=None, help="Comma-separated ISO3 codes for the country plot.")
     parser.add_argument("--top", type=int, default=30, help="Countries in the country plot (default: 30).")
+    parser.add_argument(
+        "--share", type=float, default=TOP_SHARE,
+        help="Share of each country's cheapest pixels in the breakdown plot (default: 0.05).",
+    )
     args = parser.parse_args(argv)
     try:
         for result in args.results:
-            for written in plot_all(result, args.out_dir, args.currency, args.breaks, args.countries, args.top):
+            for written in plot_all(
+                result, args.out_dir, args.currency, args.breaks, args.countries, args.top, args.share
+            ):
                 print(written)
     except (FileNotFoundError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)

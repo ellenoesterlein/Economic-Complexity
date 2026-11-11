@@ -162,16 +162,18 @@ def test_cli_writes_the_plots_and_refuses_bad_breaks(tmp_path, capsys):
     out = tmp_path / "plots"
 
     assert main([str(path), "--out-dir", str(out), "--top", "2", "--interest", "DEU"]) == 0
-    names = sorted(p.name for p in out.iterdir())
-    assert names == sorted(
-        [f"lcom_test_{kind}.png" for kind in ("countries", "distribution", "map_electricity_share", "map_lcom")]
-        + ["lcom_test_breakdown_top5.png", "lcom_test_breakdown_top5.csv"]
+    figures = sorted(p.name for p in (out / "lcom_test" / "figures").iterdir())
+    assert figures == sorted(
+        f"{kind}.png"
+        for kind in ("countries", "distribution", "map_electricity_share", "map_lcom", "map_lcom_continuous",
+                     "breakdown_top5")
     )
-    table = pd.read_csv(out / "lcom_test_breakdown_top5.csv", index_col="iso3")
+    table = pd.read_csv(out / "lcom_test" / "tables" / "breakdown_top5.csv", index_col="iso3")
     assert set(table.index) == {"DEU", "CHN"}  # every country, not only the plotted ones
     without = _result(tmp_path / "lcom_old.nc", items=False)
-    assert main([str(without), "--out-dir", str(out), "--top", "2"]) == 0
+    assert main([str(without), "--top", "2"]) == 0  # default: next to the result
     assert "no breakdown plot" in capsys.readouterr().err
-    assert not (out / "lcom_old_breakdown_top5.png").exists()
+    assert (tmp_path / "figures" / "map_lcom.png").exists()
+    assert not (tmp_path / "figures" / "breakdown_top5.png").exists()
     assert main([str(path), "--out-dir", str(out), "--breaks", "900", "800"]) == 1
     assert "breaks must be" in capsys.readouterr().err

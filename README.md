@@ -25,6 +25,8 @@ data/
   baci/                BACI trade files (download, see data/baci/README.md); lookup tables (tracked)
   boa/<run>/           one BOA run: the LCOE file, its cost workbook and the 2050 solution file
 outputs/               results of both parts (git-ignored)
+  <run>/<scenario>/    one LCOM result (e.g. y2050_full-load): NetCDF, register, provenance,
+                       figures/ and tables/
 ```
 
 ## Economic complexity (ECI, PCI)
@@ -80,14 +82,15 @@ python -m lcom.cli data/boa/<run>/optimal_lcoe_wy2025_01MWkm2_cov0p9_2025_2060.n
 
 | Option | Effect |
 |---|---|
-| `--out-dir DIR` | Output folder (default `outputs/`); results go to `DIR/<run>/` |
+| `--out-dir DIR` | Output folder (default `outputs/`); results go to `DIR/<run>/<scenario>/` |
 | `--cost-workbook PATH` | The cost workbook, if it is not next to the LCOE file |
 | `--solution-file PATH` | The 2050 solution file, if it is not next to the LCOE file |
 | `--operation full-load\|part-load` | Plant operation (default `full-load`, see Method) |
 | `--load-factor X` | A fixed plant load factor in (0, 1] in place of `--operation`; at most the served fraction |
 | `--wacc X` | One cost of capital for every pixel, in place of the regional WACC |
 
-For each LCOE file the run writes `lcom_<scenario>_y2050[_partload][_lf…][_wacc…].nc` (all cost layers in USD,
+For each LCOE file the run writes to `<run>/<scenario>/`, with `<scenario>` `y2050_full-load`, `y2050_part-load`,
+`y2050_lf…` and a `_wacc…` suffix for a fixed WACC: `lcom_<lcoe stem>_y2050[…].nc` (all cost layers in USD,
 the WACC, the LCOE and its split), `…_assumptions_register.csv` (one row per input with value, unit and source)
 and `…_provenance.json`. It accepts LCOE files of BOA 1.8.0 and of BOA 1.9 or later (`schema_version` 1). It
 refuses a workbook that differs from the one that priced the LCOE, and a solution file with another LCOE or run
@@ -101,29 +104,34 @@ Cost items of the result, in USD per tonne of methanol (`lcom_item_<item>_usd_pe
 ### Plots
 
 ```
-python -m lcom.plot outputs/<run>/lcom_*.nc
+python -m lcom.plot outputs/<run>/*/lcom_*.nc
+python -m lcom.compare outputs/<run>/*/lcom_*.nc --paper-results <figshare>/processedYearlyResults_Year2018_Demand10_MeOH_1.csv
 ```
 
-For each result file it writes these files next to it:
+For each result file `lcom.plot` writes to `figures/` and `tables/` next to it. The maps use the Equal Earth
+projection (cartopy).
 
 | File | Content |
 |---|---|
-| `…_map_lcom.png` | LCOM per pixel in 10 classes (deciles of the priced pixels) |
-| `…_map_electricity_share.png` | Share of the LCOM that is electricity (electrolysis, DAC, heat pump, synthesis) |
-| `…_distribution.png` | Histogram of the LCOM over the priced pixels, with median and P10 |
-| `…_countries.png` | Median and P10 to P90 per country, for the 30 countries with the most priced pixels |
-| `…_breakdown_top5.png`, `.csv` | Mean cost items of the cheapest 5 % of each country's pixels (electricity from solar, wind and battery; electrolyser, DAC, heat pump, synthesis), with P10 to P90 of each electricity part. The plot shows the 10 cheapest countries, the countries of interest and the 5 most expensive (cheapest and most expensive only of countries with 20 or more priced pixels); the CSV has every country |
+| `figures/map_lcom.png` | LCOM per pixel in 8 classes, blue (cheaper than the median) to red; class limits at percentiles 5, 15, 30, 50, 70, 85 and 95 |
+| `figures/map_lcom_continuous.png` | LCOM per pixel on the continuous batlow scale (Crameri's Scientific Colour Maps), percentiles 5 to 95 |
+| `figures/map_electricity_share.png` | Share of the LCOM that is electricity (electrolysis, DAC, heat pump, synthesis) |
+| `figures/distribution.png` | Histogram of the LCOM over the priced pixels, with median and P10 |
+| `figures/countries.png` | Median and P10 to P90 per country, for the 30 countries with the most priced pixels |
+| `figures/breakdown_top5.png`, `tables/breakdown_top5.csv` | Mean cost items of the cheapest 5 % of each country's pixels (electricity from solar, wind and battery; electrolyser, DAC, heat pump, synthesis), with P10 to P90 of each electricity part. The plot shows the 10 cheapest countries, the countries of interest and the 5 most expensive (cheapest and most expensive only of countries with 20 or more priced pixels); the CSV has every country |
 
 | Option | Effect |
 |---|---|
 | `--currency EUR\|USD` | Cost unit (default EUR, at the chain's 1.08238 USD/EUR) |
-| `--breaks V1 V2 …` | Class limits of the LCOM map; give the same limits to compare runs |
+| `--breaks V1 V2 …` | Class limits of the classed LCOM map; give the same limits to compare runs |
 | `--countries ISO3,…` | Countries of the country plot, in place of the 30 largest |
 | `--top N` | Number of countries in the country plot (default 30) |
 | `--share X` | Share of each country's cheapest pixels in the breakdown (default 0.05) |
 | `--cheapest N`, `--expensive N` | Cheapest and most expensive countries in the breakdown plot (default 10 and 5) |
 | `--interest ISO3,…` | Countries of interest in the breakdown plot (default TTO, CHN, IRN, SAU, OMN, USA, RUS, CHL, DEU, JPN) |
-| `--out-dir DIR` | Output folder; default: next to each result file |
+| `--out-dir DIR` | Output folder; files go to `DIR/<result stem>/figures/` and `tables/`. Default: next to each result |
+
+`lcom.compare` writes `tables/compare_countries.csv` and `tables/compare_fig8c.csv` next to each result.
 
 Country borders are the edges between the cost keys of the result file, so the maps need no shapefile. Grey land
 has a cost key but no result.
@@ -206,5 +214,6 @@ the paper's scaling to future energy demand.
 |---|---|---|
 | LCOE, WACC (cost workbook) | Baseload Optimisation Atlas (BOA), [github.com/systemiqofficial/baseload-optimisation-atlas](https://github.com/systemiqofficial/baseload-optimisation-atlas) | Apache-2.0 |
 | Process data | Wenzel et al. (2026), main text and Supplementary Information | CC BY 4.0 |
+| Continuous colour scale (batlow) | Crameri, Scientific Colour Maps, doi 10.5281/zenodo.1243862, via the `colormaps` package | MIT |
 | DAC and heat pump medians | Wenzel et al. (2026), figshare doi 10.6084/m9.figshare.30664253 | CC BY 4.0 |
 | EUR/USD rate | ECB data portal, `EXR.A.USD.EUR.SP00.A` | ECB reuse policy |

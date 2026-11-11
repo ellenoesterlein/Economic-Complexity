@@ -3,8 +3,9 @@ Run the Route B chain over one promoted BOA LCOE file.
 
 Reads ``optimal_lcoe_*.nc``, prices hydrogen, DAC CO2 and methanol per pixel for the LCOE year
 2050 (the year of the paper's process data) from each pixel's LCOE and regional WACC, and writes
-three files to ``<out_dir>/<run>/``: the result NetCDF, ``<stem>_assumptions_register.csv`` and
-``<stem>_provenance.json``.
+three files to ``<out_dir>/<run>/<scenario>/`` (e.g. ``y2050_full-load``): the result NetCDF,
+``<stem>_assumptions_register.csv`` and ``<stem>_provenance.json``. ``lcom.plot`` and ``lcom.compare`` add
+``figures/`` and ``tables/`` to that folder.
 
 The BOA solution file of 2050 (``optimal_sol_*_GLOBAL_2050.nc``, by default next to the LCOE file)
 supplies the coverage, the served fraction and the solar, wind and battery cost of each pixel. They set
@@ -267,6 +268,12 @@ def _number_token(value: float) -> str:
     return f"{value:g}".replace(".", "p")
 
 
+def scenario_name(year: int, load_factor: float | None, wacc: float | None, operation: str = FULL_LOAD) -> str:
+    """Folder of one result in its run folder, e.g. ``y2050_full-load`` or ``y2050_lf0p85_wacc0p08``."""
+    name = f"y{year}_" + (f"lf{_number_token(load_factor)}" if load_factor is not None else operation)
+    return name + (f"_wacc{_number_token(wacc)}" if wacc is not None else "")
+
+
 def output_stem(
     lcoe_path: Path, year: int, load_factor: float | None, wacc: float | None, operation: str = FULL_LOAD
 ) -> str:
@@ -390,7 +397,7 @@ def run(
     logger.info("Priced %d: %d pixels.", PRICED_YEAR, int(valid.sum()))
 
     stem = output_stem(lcoe_path, PRICED_YEAR, load_factor, wacc, operation)
-    run_dir = out_dir / str(attrs.get("run", "unknown_run"))
+    run_dir = out_dir / str(attrs.get("run", "unknown_run")) / scenario_name(PRICED_YEAR, load_factor, wacc, operation)
     run_dir.mkdir(parents=True, exist_ok=True)
     paths = RunResult(
         run_dir / f"{stem}.nc", run_dir / f"{stem}_assumptions_register.csv", run_dir / f"{stem}_provenance.json"

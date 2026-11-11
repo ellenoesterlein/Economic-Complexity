@@ -175,7 +175,8 @@ def test_run_writes_result_register_and_provenance(lcoe_path, tmp_path):
     result = run(lcoe_path, tmp_path / "out")
 
     assert result.netcdf.name == "lcom_wy2025_01MWkm2_cov0p9_2045_2050_y2050.nc"
-    assert result.netcdf.parent.name == RUN
+    assert result.netcdf.parent.name == "y2050_full-load"
+    assert result.netcdf.parent.parent.name == RUN
     with xr.open_dataset(result.netcdf) as out:
         assert out["lcom_usd_per_t"].dims == ("year", "lat", "lon")
         assert out["year"].values.tolist() == [2050]
@@ -247,6 +248,7 @@ def test_overrides_are_used_recorded_and_named(lcoe_path, tmp_path):
     result = run(lcoe_path, tmp_path / "out", load_factor=0.85, wacc=0.08)
 
     assert result.netcdf.name.endswith("_y2050_lf0p85_wacc0p08.nc")
+    assert result.netcdf.parent.name == "y2050_lf0p85_wacc0p08"
     with xr.open_dataset(result.netcdf) as out:
         assert out.attrs["operation"] == "fixed load factor"
         assert "operation.fixed-load-factor" in out.attrs["data_flags"]
@@ -265,6 +267,7 @@ def test_part_load_uses_the_served_fraction_at_the_lcoe(lcoe_path, tmp_path):
     part = run(lcoe_path, tmp_path / "out", operation="part-load")
 
     assert part.netcdf.name.endswith("_y2050_partload.nc")
+    assert part.netcdf.parent.name == "y2050_part-load"
     with xr.open_dataset(part.netcdf) as out:
         assert out.attrs["operation"] == "part-load"
         assert "operation.part-load-no-minimum" in out.attrs["data_flags"]

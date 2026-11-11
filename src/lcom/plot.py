@@ -1,16 +1,20 @@
 """
-Plot an LCOM result: two world maps, the distribution over pixels and the country medians.
+Plot an LCOM result: world maps, the distribution over pixels, the country medians and the cost breakdown.
 
-For each result file (``lcom_*.nc``) it writes four PNG files next to it (or to ``--out-dir``):
+For each result file (``lcom_*.nc``) it writes to ``figures/`` and ``tables/`` next to it (with ``--out-dir DIR``:
+to ``DIR/<result stem>/figures`` and ``/tables``). The maps use the Equal Earth projection (cartopy).
 
-- ``<stem>_map_lcom.png``: LCOM per pixel in 10 classes, with the deciles of the priced pixels as class
-  limits, or ``--breaks``; give the same breaks to compare runs.
-- ``<stem>_map_electricity_share.png``: the share of the LCOM that is electricity (electrolysis, DAC, heat
-  pump and synthesis plant), in decile classes.
-- ``<stem>_distribution.png``: histogram of the LCOM over the priced pixels, with the median and the P10.
-- ``<stem>_countries.png``: median and P10 to P90 per country, for the countries with the most priced pixels
-  or for ``--countries``.
-- ``<stem>_breakdown_top5.png`` and ``.csv``: the LCOM of the cheapest 5 % of each country's pixels
+- ``map_lcom.png``: LCOM per pixel in 8 classes from blue (cheaper than the median) to red (more expensive).
+  Class limits: percentiles 5, 15, 30, 50, 70, 85 and 95 of the priced pixels, or ``--breaks``; give the same
+  breaks to compare runs.
+- ``map_lcom_continuous.png``: LCOM per pixel on the continuous batlow scale (Crameri's Scientific Colour Maps;
+  cheap is dark blue), from percentile 5 to 95 of the priced pixels.
+- ``map_electricity_share.png``: the share of the LCOM that is electricity (electrolysis, DAC, heat pump and
+  synthesis plant), in decile classes.
+- ``distribution.png``: histogram of the LCOM over the priced pixels, with the median and the P10.
+- ``countries.png``: median and P10 to P90 per country, for the countries with the most priced pixels or for
+  ``--countries``.
+- ``breakdown_top5.png`` and ``tables/breakdown_top5.csv``: the LCOM of the cheapest 5 % of each country's pixels
   (``--share``), split into cost items: the electricity of all stages from solar, wind and battery, and the
   electrolyser, DAC, heat pump and synthesis plant. Each bar is the mean over these pixels, so the items add up
   to the mean LCOM. Whiskers show P10 to P90 of each electricity part. The plot has three groups: the cheapest
@@ -22,7 +26,7 @@ Borders are the edges between the cost keys of the result file (country level, 0
 shapefile is necessary. Grey land has a cost key but no result.
 
 Examples:
-    python -m lcom.plot outputs/<run>/lcom_*.nc
+    python -m lcom.plot outputs/<run>/*/lcom_*.nc
     python -m lcom.plot RESULT.nc --currency USD --breaks 500 600 700 800 900 1000 1200 1500
     python -m lcom.plot RESULT.nc --countries CHN,IND,SAU,AUS,USA,ARG,MEX,ZAF,FRA
 """
@@ -34,12 +38,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import cartopy.crs as ccrs
+import colormaps as cmaps
 import numpy as np
 import pandas as pd
 import xarray as xr
 from matplotlib import font_manager, rc_context
 from matplotlib.collections import LineCollection
-from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize, to_hex
 from matplotlib.figure import Figure
 
 from lcom.paper_inputs import USD_PER_EUR
@@ -58,6 +64,14 @@ AXIS = "#c3c2b7"
 BORDER = "#7d7c77"
 FONTS = ["Segoe UI", "Helvetica Neue", "Arial", "DejaVu Sans"]
 DPI = 200
+# Diverging ramp of the LCOM map: the blue sequential steps 700, 550, 350, 150, the neutral grey, and red steps
+# (hue of categorical red) with the same OKLCH lightness as the blue steps.
+DIVERGING = ["#0d366b", "#1c5cab", "#5598e7", "#b7d3f6", "#f0efec", "#f4c2be", "#dd716a", "#9e3432", "#621b1a"]
+MAP_PERCENTILES = (5, 15, 30, 50, 70, 85, 95)
+# Continuous LCOM map: batlow of Crameri's Scientific Colour Maps (perceptually uniform, readable with colour-vision
+# deficiency and in grey); cheap is dark blue. Its range is percentiles 5 to 95, like the end classes of map_lcom.
+CONTINUOUS = "batlow"
+CONTINUOUS_RANGE = (5, 95)
 # Categorical slots 1 to 7 of the reference palette, in their fixed order: the stack order of the breakdown.
 CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"]
 # (result variable item, label); the three electricity parts first, then the plants along the chain.
@@ -271,42 +285,104 @@ def class_breaks(values: np.ndarray) -> np.ndarray:
     return np.unique(np.round(deciles / step) * step)
 
 
-def plot_map(result: Result, values: np.ndarray, title: str, label: str, breaks: np.ndarray, path: Path) -> None:
-    """A classed map: one ramp colour per class between ``breaks``, plus one class below and one above."""
+def percentile_breaks(values: np.ndarray, percentiles: tuple[float, ...] = MAP_PERCENTILES) -> np.ndarray:
+    """Class limits at ``percentiles`` of ``values``, rounded to a twentieth of the order of magnitude of their range."""
+    limits = np.percentile(values[np.isfinite(values)], percentiles)
+    spread = float(np.ptp(limits)) or 1.0
+    step = 10 ** np.floor(np.log10(spread)) / 20
+    return np.unique(np.round(limits / step) * step)
+
+
+def diverging_colors(classes: int) -> list[str]:
+    """``classes`` colours from dark blue (low) to dark red (high); the neutral grey only for an odd count."""
+    ramp = LinearSegmentedColormap.from_list("diverging", DIVERGING)
+    arm = classes // 2
+    low = np.linspace(0, 0.5, arm + 1)[:-1]
+    positions = [*low, *([0.5] if classes % 2 else []), *(1 - low[::-1])]
+    return [to_hex(ramp(p)) for p in positions]
+
+
+def plot_map(
+    result: Result,
+    values: np.ndarray,
+    title: str,
+    label: str,
+    breaks: np.ndarray,
+    path: Path,
+    diverging: bool = False,
+    note: str = "",
+    continuous: bool = False,
+) -> None:
+    """
+    A map in the Equal Earth projection. Classed: one colour per class between ``breaks``, plus one class below
+    and one above; ``diverging`` colours low classes blue and high classes red, otherwise one blue ramp.
+    ``continuous``: the batlow scale from the first to the last value of ``breaks``, extended at both ends.
+    """
     land = result.iso3 != ""
-    rows, cols = np.nonzero(land.any(axis=1))[0], np.nonzero(land.any(axis=0))[0]
-    window = (slice(rows.min(), rows.max() + 1), slice(cols.min(), cols.max() + 1))
+    rows = np.nonzero(land.any(axis=1))[0]
+    lat_range = (float(result.lat[rows].min()) - 1, float(result.lat[rows].max()) + 1)
+    # The grid runs from -180 to 180 with both ends; drop the repeated last column. Keep the rows of the map.
+    window = (slice(rows.min(), rows.max() + 1), slice(0, len(result.lon) - 1))
     lat, lon = result.lat[window[0]], result.lon[window[1]]
-    iso3, values = result.iso3[window], values[window]
     dlat, dlon = abs(float(lat[1] - lat[0])), abs(float(lon[1] - lon[0]))
     extent = (lon.min() - dlon / 2, lon.max() + dlon / 2, lat.min() - dlat / 2, lat.max() + dlat / 2)
     origin = "lower" if lat[0] < lat[-1] else "upper"
+    layer = np.ma.masked_invalid(values[window].astype(float))
+    without = np.ma.masked_invalid(np.where(land[window] & ~np.isfinite(values[window]), 1.0, np.nan))
+
+    projection, lonlat = ccrs.EqualEarth(), ccrs.PlateCarree()
+    corners = projection.transform_points(lonlat, np.array([-180.0, 180.0, 0.0, 0.0]),
+                                          np.array([0.0, 0.0, *lat_range]))
     width = 12.0
-    fig = _figure(width, width * (extent[3] - extent[2]) / (extent[1] - extent[0]) + 1.4)
-    ax = fig.add_subplot()
+    aspect = (corners[3, 1] - corners[2, 1]) / (corners[1, 0] - corners[0, 0])
+    fig = _figure(width, width * aspect + 1.9)
+    ax = fig.add_subplot(projection=projection)
     ax.set_facecolor(SURFACE)
-    ax.set_axis_off()
+    # Limits in projected units: the full width at the equator, the height of the land rows. set_extent would take
+    # the width at the cropped latitudes and cut the map at the sides.
+    margin = 0.005 * (corners[1, 0] - corners[0, 0])
+    ax.set_xlim(corners[0, 0] - margin, corners[1, 0] + margin)
+    ax.set_ylim(corners[2, 1], corners[3, 1])
+    ax.spines["geo"].set_edgecolor(AXIS)
+    ax.spines["geo"].set_linewidth(0.6)
+    ax.gridlines(crs=lonlat, xlocs=range(-180, 181, 30), ylocs=range(-60, 61, 30), color=GRID, linewidth=0.4,
+                 zorder=0)
 
-    land_without_result = np.where((iso3 != "") & ~np.isfinite(values), 1.0, np.nan)
-    ax.imshow(land_without_result, extent=extent, origin=origin, cmap=ListedColormap([NO_RESULT]),
-              interpolation="nearest")
-    colors = LinearSegmentedColormap.from_list("blue", BLUE_RAMP)(np.linspace(0, 1, len(breaks) + 1))
-    cmap = ListedColormap(colors[1:-1]).with_extremes(under=colors[0], over=colors[-1], bad=(0, 0, 0, 0))
-    image = ax.imshow(values, extent=extent, origin=origin, cmap=cmap, norm=BoundaryNorm(breaks, len(breaks) - 1),
-                      interpolation="nearest")
-    ax.add_collection(LineCollection(border_segments(iso3, lat, lon), colors=BORDER, linewidths=0.25))
-    ax.set_xlim(extent[0], extent[1])
-    ax.set_ylim(extent[2], extent[3])
+    # Nearest-neighbour regridding keeps every class colour intact. Target: four cells per grid cell along the long
+    # side, at most 1800 along the short side (the 0.25 degree world grid reaches the cap).
+    regrid = {"transform": lonlat, "extent": extent, "origin": origin, "interpolation": "nearest",
+              "regrid_shape": min(1800, 4 * max(layer.shape))}
+    ax.imshow(without, cmap=ListedColormap([NO_RESULT]), zorder=1, **regrid)
+    if continuous:
+        cmap = getattr(cmaps, CONTINUOUS).with_extremes(bad=(0, 0, 0, 0))
+        norm = Normalize(float(breaks[0]), float(breaks[-1]))
+    else:
+        if diverging:
+            colors = diverging_colors(len(breaks) + 1)
+        else:
+            colors = [to_hex(c) for c in LinearSegmentedColormap.from_list("blue", BLUE_RAMP)(
+                np.linspace(0, 1, len(breaks) + 1))]
+        cmap = ListedColormap(colors[1:-1]).with_extremes(under=colors[0], over=colors[-1], bad=(0, 0, 0, 0))
+        norm = BoundaryNorm(breaks, len(breaks) - 1)
+    shown = ax.imshow(layer, cmap=cmap, norm=norm, zorder=2, **regrid)
+    # Border segments are 0.25 degree long, so projecting their end points is exact enough.
+    segments = border_segments(result.iso3, result.lat, result.lon)
+    ends = projection.transform_points(lonlat, segments[..., 0].ravel(), segments[..., 1].ravel())[:, :2]
+    ax.add_collection(LineCollection(ends.reshape(-1, 2, 2), colors=BORDER, linewidths=0.3, zorder=3))
 
-    bar = fig.colorbar(image, ax=ax, orientation="horizontal", fraction=0.04, pad=0.02, shrink=0.6, aspect=40,
-                       extend="both", spacing="uniform", ticks=breaks)
-    bar.set_label(label, color=INK_SECONDARY, fontsize=9)
+    bar = fig.colorbar(shown, ax=ax, orientation="horizontal", fraction=0.05, pad=0.03, shrink=0.62, aspect=42,
+                       extend="both", extendfrac=0.06, spacing="uniform", ticks=None if continuous else breaks)
+    bar.set_label(label + (f"\n{note}" if note else ""), color=INK_SECONDARY, fontsize=9)
     bar.outline.set_visible(False)
-    bar.ax.tick_params(colors=INK_MUTED, labelcolor=INK_SECONDARY, labelsize=8, length=0)
+    bar.ax.tick_params(colors=INK_MUTED, labelcolor=INK_SECONDARY, labelsize=8.5, length=0, pad=4)
     bar.ax.xaxis.set_major_formatter(lambda v, _: f"{v:,.0f}")
+    if diverging or continuous:
+        for x, text, align in ((0, "← cheaper", "left"), (1, "more expensive →", "right")):
+            bar.ax.text(x, 1.5, text, transform=bar.ax.transAxes, ha=align, va="bottom", fontsize=8.5,
+                        color=INK_SECONDARY)
     priced = int(np.isfinite(values).sum())
     _titles(ax, title, f"{result.run} · LCOE year {result.priced_year} · {priced:,} priced pixels · "
-                       f"grey: land without a result")
+                       f"Equal Earth projection · grey: land without a result")
     fig.savefig(path, dpi=DPI, facecolor=SURFACE)
 
 
@@ -431,37 +507,59 @@ def plot_all(
         raise ValueError(f"{path.name} has no priced pixels.")
     if breaks is not None and (len(breaks) < 2 or np.any(np.diff(breaks) <= 0)):
         raise ValueError(f"breaks must be at least two rising values, got {breaks}.")
-    out_dir = out_dir or path.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    paths = [out_dir / f"{result.name}_{kind}.png" for kind in ("map_lcom", "map_electricity_share",
-                                                                 "distribution", "countries")]
+    base = out_dir / result.name if out_dir else path.parent
+    figures, tables = base / "figures", base / "tables"
+    figures.mkdir(parents=True, exist_ok=True)
+    paths = [figures / f"{kind}.png" for kind in ("map_lcom", "map_lcom_continuous", "map_electricity_share",
+                                                  "distribution", "countries")]
     electricity_pct = result.electricity_share * 100
     stats = country_stats(result, countries, top)
     chosen = "selected countries" if countries else f"the {len(stats)} countries with the most priced pixels"
     with rc_context({"font.family": _font()}):
-        plot_map(result, result.lcom, "Levelised cost of methanol (Route B)", f"LCOM, {currency}/t",
-                 np.asarray(breaks, dtype=float) if breaks else class_breaks(result.lcom), paths[0])
+        plot_map(
+            result,
+            result.lcom,
+            "Levelised cost of methanol (Route B)",
+            f"LCOM, {currency}/t",
+            np.asarray(breaks, dtype=float) if breaks else percentile_breaks(result.lcom),
+            paths[0],
+            diverging=True,
+            note="class limits: --breaks" if breaks else
+            "class limits: percentiles 5, 15, 30, 50 (median), 70, 85 and 95 of the priced pixels",
+        )
+        plot_map(
+            result,
+            result.lcom,
+            "Levelised cost of methanol (Route B)",
+            f"LCOM, {currency}/t",
+            np.percentile(result.lcom[np.isfinite(result.lcom)], CONTINUOUS_RANGE),
+            paths[1],
+            note=f"continuous scale (batlow, Crameri) from percentile {CONTINUOUS_RANGE[0]} to {CONTINUOUS_RANGE[1]} of the "
+            "priced pixels",
+            continuous=True,
+        )
         plot_map(result, electricity_pct, "Electricity share of the LCOM", "Share of the LCOM that is electricity, %",
-                 class_breaks(electricity_pct), paths[1])
-        plot_distribution(result, paths[2])
-        plot_countries(result, stats, f"{result.run} · {chosen} · priced pixels in brackets", paths[3])
+                 class_breaks(electricity_pct), paths[2])
+        plot_distribution(result, paths[3])
+        plot_countries(result, stats, f"{result.run} · {chosen} · priced pixels in brackets", paths[4])
         try:
             items = load_items(path, currency)
         except ValueError as e:
             print(f"warning: no breakdown plot: {e}", file=sys.stderr)
             return paths
         breakdown = breakdown_stats(items, share=share)
-        stem = f"{result.name}_breakdown_top{share * 100:g}"
+        stem = f"breakdown_top{share * 100:g}"
+        tables.mkdir(parents=True, exist_ok=True)
         plot_breakdown(
             breakdown_groups(breakdown, cheapest, interest, expensive),
             currency,
             f"{result.run} · cheapest {share:.0%} of each country's pixels (used/priced in brackets) · bars: means\n"
             f"whiskers: P10 to P90 of each electricity part · cheapest and most expensive of the countries with "
             f"{MIN_PIXELS}+ pixels",
-            out_dir / f"{stem}.png",
+            figures / f"{stem}.png",
         )
-        write_breakdown(breakdown, currency, out_dir / f"{stem}.csv")
-        paths += [out_dir / f"{stem}.png", out_dir / f"{stem}.csv"]
+        write_breakdown(breakdown, currency, tables / f"{stem}.csv")
+        paths += [figures / f"{stem}.png", tables / f"{stem}.csv"]
     return paths
 
 
@@ -470,11 +568,14 @@ def main(argv: list[str] | None = None) -> int:
         prog="lcom-plot", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("results", nargs="+", type=Path, help="LCOM result files (lcom_*.nc).")
-    parser.add_argument("--out-dir", type=Path, default=None, help="Output folder; default: next to each result.")
+    parser.add_argument(
+        "--out-dir", type=Path, default=None,
+        help="Output folder; files go to DIR/<result stem>/figures and /tables. Default: next to each result.",
+    )
     parser.add_argument("--currency", choices=("EUR", "USD"), default="EUR", help="Cost unit (default: EUR).")
     parser.add_argument(
         "--breaks", type=float, nargs="+", metavar="VALUE", default=None,
-        help="Class limits of the LCOM map, rising; default: the deciles of the priced pixels.",
+        help="Class limits of the classed LCOM map, rising; default: percentiles 5 to 95 of the priced pixels.",
     )
     parser.add_argument("--countries", type=lambda s: [c.strip().upper() for c in s.split(",") if c.strip()],
                         default=None, help="Comma-separated ISO3 codes for the country plot.")
